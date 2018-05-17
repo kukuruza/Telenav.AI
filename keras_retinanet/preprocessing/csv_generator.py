@@ -32,7 +32,7 @@ def _parse(value, function, fmt):
     Parse a string into a value, and format a nice ValueError if it fails.
 
     Returns `function(value)`.
-    Any `ValueError` raised is catched and a new `ValueError` is raised
+    Any `ValueError` raised is caught and a new `ValueError` is raised
     with message `fmt.format(e)`, where `e` is the caught `ValueError`.
     """
     try:

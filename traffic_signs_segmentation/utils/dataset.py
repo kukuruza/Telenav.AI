@@ -89,7 +89,7 @@ def load_valid_rois(input_path):
             continue
 
         scaling_factor, width_crop_size = image.get_crop_scale(width, height)
-        # width_crop_size containes the scaled down value
+        # width_crop_size contains the scaled down value
         width_crop_size = int(width_crop_size * scaling_factor)
         image_min_size = scaling_factor * conf.min_size
 

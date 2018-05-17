@@ -28,7 +28,7 @@ def anchor_targets_bbox(
 ):
     anchors = anchors_for_shape(image_shape, **kwargs)
 
-    # label: 1 is positive, 0 is negative, -1 is dont care
+    # label: 1 is positive, 0 is negative, -1 is don't care
     labels = np.ones((anchors.shape[0], num_classes)) * -1
 
     if annotations.shape[0]:

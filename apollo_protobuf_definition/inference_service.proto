@@ -6,7 +6,7 @@ service InferenceService {
     rpc process (DetectionRequest) returns (Metadata) {}
 }
 
-// Request message containg the images path
+// Request message containing the images path
 message DetectionRequest {
     required string images_path = 1;
 }

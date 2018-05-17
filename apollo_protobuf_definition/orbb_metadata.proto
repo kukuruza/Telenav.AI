@@ -89,7 +89,7 @@ message Roi
 {
     required Mark           type        = 1; // predominant class of detection
     required Rect           rect        = 2; // detection bounding box
-    required bool           manual      = 3; // detection was manualy added or it was automated
+    required bool           manual      = 3; // detection was manually added or it was automated
     optional string         algorithm   = 4; // the algorithm use for the automated detection
     repeated Detection      detections  = 5; // all detection classes
     optional Localization   local       = 6; // localization information of the actual detection not of the image
