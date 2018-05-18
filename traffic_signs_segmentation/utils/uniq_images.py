@@ -30,7 +30,7 @@ def main():
     duplicates_path = args.dataset_path + "/duplicate/"
 
     if not utils.valid_dataset(args.dataset_path):
-        print "Invalid dataset"
+        print("Invalid dataset")
         sys.exit(-1)
 
     utils.make_dirs([duplicates_path])
