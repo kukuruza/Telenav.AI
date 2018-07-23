@@ -19,6 +19,7 @@ import warnings
 import keras
 import keras_resnet
 import keras_resnet.models
+import keras.applications.imagenet_utils
 from ..models import retinanet
 
 resnet_filename = 'ResNet-{}-model.keras.h5'

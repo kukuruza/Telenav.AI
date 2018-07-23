@@ -77,3 +77,46 @@ def smooth_l1(sigma=3.0):
         return keras.backend.sum(regression_loss) / normalizer
 
     return _smooth_l1
+
+
+from keras.engine.topology import Layer
+
+
+def discrepancy_clas(inputs1, inputs2):
+    print ('discrepancy_clas', inputs.get_shape())
+    return keras.backend.sum(keras.backend.abs(
+        keras.backend.softmax(inputs1, axis=label_axis) -
+        keras.backend.softmax(inputs2, axis=label_axis)))
+
+class DiscrepancyClassification(Layer):
+    def __init__(self, **kwargs):
+        super(DiscrepancyClassification, self).__init__(**kwargs)
+
+    def call(self, x, mask=None):
+        loss = discrepancy_clas(x[0], x[1])
+        self.add_loss(loss, x)
+        return loss
+
+    def get_output_shape_for(self, input_shape):
+        return (input_shape[0][0],1)
+
+ 
+def discrepancy_regr(inputs1, inputs2):
+    return keras.backend.sum(keras.backend.abs(inputs1 - inputs2))
+
+class DiscrepancyRegression(Layer):
+    def __init__(self, **kwargs):
+        super(DiscrepancyRegression, self).__init__(**kwargs)
+
+    def call(self, x, mask=None):
+        loss = discrepancy_regr(x[0], x[1])
+        self.add_loss(loss, x)
+        return loss
+
+    def get_output_shape_for(self, input_shape):
+        return (input_shape[0][0],1)
+
+
+def zero_loss(y_true, y_pred):
+    return keras.backend.zeros_like(y_pred)  # Need to fix shape.
+
