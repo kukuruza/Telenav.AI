@@ -19,6 +19,7 @@ from .. import initializers
 from .. import layers
 from .. import losses
 
+import logging
 import numpy as np
 
 """
@@ -290,15 +291,17 @@ def retinanet(
         name                    : Name of the model.
 
     Returns
-        A keras.models.Model which takes an image as input and outputs generated anchors and the result from each submodel on every pyramid level.
-
-        The order of the outputs is as defined in submodels. Using default values the output is:
+        Three keras.models.Models.
         ```
         [
-            anchors, regression, classification
+           model_G              : Generator. Inputs images, outputs a list of features from all feature pyramid layers.
+           model_C              : Classifier. Inputs the result of model_G, outputs [regression, classification].
+           model_A              : Anchors. Inputs the result of model_G, outputs 'anchors'.
         ]
         ```
     """
+    logger = logging.getLogger(__name__)
+
     if submodels is None:
         submodels = default_submodels(num_classes, anchor_parameters)
 
@@ -306,15 +309,30 @@ def retinanet(
 
     # compute pyramid features as per https://arxiv.org/abs/1708.02002
     features = create_pyramid_features(C3, C4, C5)
+    model_G = keras.models.Model(inputs=inputs, outputs=features, name='G')
+    logger.info('Features: %s' % str(features))
+
+    pyramid_feature_size = features[0].get_shape()[3]
+    logger.info('Pyramid_feature_size: %d' % pyramid_feature_size)
+    inputs_C  = [
+      keras.layers.Input(shape=(None, None, pyramid_feature_size), name='P3'),
+      keras.layers.Input(shape=(None, None, pyramid_feature_size), name='P4'),
+      keras.layers.Input(shape=(None, None, pyramid_feature_size), name='P5'),
+      keras.layers.Input(shape=(None, None, pyramid_feature_size), name='P6'),
+      keras.layers.Input(shape=(None, None, pyramid_feature_size), name='P7')
+    ]
+    logger.info('Inputs_C: %s' % str(inputs_C))
 
     # for all pyramid levels, run available submodels
-    pyramids = __build_pyramid(submodels, features)
-    anchors  = __build_anchors(anchor_parameters, features)
+    pyramids = __build_pyramid(submodels, inputs_C)
+    model_C = keras.models.Model(inputs=inputs_C, outputs=pyramids, name='C')
+    logger.info('Pyramids: %s' % str(pyramids))
 
-    # concatenate outputs to one list
-    outputs = [anchors] + pyramids
+    anchors  = __build_anchors(anchor_parameters, inputs_C)
+    model_A = keras.models.Model(inputs=inputs_C, outputs=anchors, name='A')
+    logger.info('Anchors: %s' % str(anchors))
 
-    return keras.models.Model(inputs=inputs, outputs=outputs, name=name)
+    return model_G, model_C, model_A
 
 
 def retinanet_bbox(
@@ -345,22 +363,25 @@ def retinanet_bbox(
         ]
         ```
     """
-    model = retinanet(inputs=inputs, num_classes=num_classes, **kwargs)
+    logger = logging.getLogger(__name__)
+
+    model_G, model_C, model_A = retinanet(inputs=inputs, num_classes=num_classes, **kwargs)
 
     # we expect the anchors, regression and classification values as first output
-    anchors        = model.outputs[0]
-    regression     = model.outputs[1]
-    classification = model.outputs[2]
-
-    # "other" can be any additional output from custom submodels, by default this will be []
-    other = model.outputs[3:]
+    features       = model_G.outputs
+    anchors        = model_A(features)
+    pipeline       = model_C(features)
+    regression     = pipeline[0]
+    classification = pipeline[1]
+    logger.info('Regression: %s' % str(regression))
+    logger.info('Classification: %s' % str(classification))
 
     # apply predicted regression to anchors
     boxes = layers.RegressBoxes(name='boxes')([anchors, regression])
     boxes = layers.ClipBoxes(name='clipped_boxes')([inputs, boxes])
 
     # construct list of outputs
-    outputs = [regression, classification] + other + [boxes]
+    outputs = [regression, classification, boxes]
 
     # optionally apply non maximum suppression
     if nms:

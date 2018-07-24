@@ -13,6 +13,7 @@ echo '------------------------------------'
 TELENAV_HOME=/home/scotty/etoropov/Telenav.AI
 PYTHONPATH=$TELENAV_HOME:$TELENAV_HOME/apollo_python_common/protobuf/:$PYTHONPATH
 export PYTHONPATH
+export TF_CPP_MIN_LOG_LEVEL=3  # Remove annoying TF debugging info.
 
 python3 -u $TELENAV_HOME/retinanet/train_adapt.py \
     --imagenet-weights \
