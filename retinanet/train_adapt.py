@@ -43,7 +43,7 @@ def model_with_weights(model, weights, skip_mismatch):
     return model
 
 
-def create_two_doublehead_models(backbone_retinanet, backbone, num_classes, weights, multi_gpu=0, freeze_backbone=False):
+def create_adapt_models(backbone_retinanet, backbone, num_classes, weights, multi_gpu=0, freeze_backbone=False):
     modifier = freeze_model if freeze_backbone else None
 
     # Keras recommends initialising a multi-gpu model on the CPU to ease weight sharing, and to prevent OOM errors.
@@ -53,88 +53,79 @@ def create_two_doublehead_models(backbone_retinanet, backbone, num_classes, weig
     if multi_gpu > 1:
         assert False
     else:
-        retina_model, model_G, model_C1, model_C2 = backbone_retinanet(num_classes, backbone=backbone, nms=True, modifier=modifier)
-        logging.info(model_C1.summary())
-        logging.info(model_C2.summary())
-        src_G_outputs = model_G(src_inputs)
-        src_C1_outputs = model_C1(src_G_outputs)
-        src_C2_outputs = model_C2(src_G_outputs)
-        src_C1_regr_src = Lambda(lambda x: x, name='src_C1_regression')(src_C1_outputs[0])
-        src_C1_clas_src = Lambda(lambda x: x, name='src_C1_classification')(src_C1_outputs[1])
-        src_C2_regr_src = Lambda(lambda x: x, name='src_C2_regression')(src_C2_outputs[0])
-        src_C2_clas_src = Lambda(lambda x: x, name='src_C2_classification')(src_C2_outputs[1])
-        inputs = [src_inputs, dst_inputs]
-        outputs = [src_C1_regr_src, src_C1_clas_src, src_C2_regr_src, src_C2_clas_src]
-        model = keras.models.Model(inputs=inputs, outputs=outputs, name='retinanet-adapt')
-        logging.info('Adapt outputs: %s' % str(retina_model.outputs))
+        retina_model, model_G, model_C = backbone_retinanet(num_classes, backbone=backbone, nms=True, modifier=modifier)
+        model_C = model_with_weights(model_C, weights=weights, skip_mismatch=True)
+        logging.info(model_C.summary())
 
-        model = model_with_weights(model, weights=weights, skip_mismatch=True)
-        training_model   = model
-        prediction_model = model
+    src_G_outputs = model_G(src_inputs)
+    src_C_outputs = model_C(src_G_outputs)
+    src_C1_regr = Lambda(lambda x: x, name='src_C1_regression')(src_C_outputs[0])
+    src_C2_regr = Lambda(lambda x: x, name='src_C2_regression')(src_C_outputs[1])
+    src_C1_clas = Lambda(lambda x: x, name='src_C1_classification')(src_C_outputs[2])
+    src_C2_clas = Lambda(lambda x: x, name='src_C2_classification')(src_C_outputs[3])
 
-    # compile model
-    training_model.compile(
+    dst_G_outputs = model_G(dst_inputs)
+    dst_C_outputs = model_C(dst_G_outputs)
+    dst_C1_regr = Lambda(lambda x: x, name='dst_C1_regression')(dst_C_outputs[0])
+    dst_C2_regr = Lambda(lambda x: x, name='dst_C2_regression')(dst_C_outputs[1])
+    dst_C1_clas = Lambda(lambda x: x, name='dst_C1_classification')(dst_C_outputs[2])
+    dst_C2_clas = Lambda(lambda x: x, name='dst_C2_classification')(dst_C_outputs[3])
+
+    # Step 1.
+    inputs = [src_inputs, dst_inputs]
+    outputs = [src_C1_regr, src_C2_regr, src_C1_clas, src_C2_clas]
+    model_step1 = keras.models.Model(inputs=inputs, outputs=outputs, name='adapt-step1')
+    model_step1.compile(
         loss={
             'src_C1_regression'    : losses.smooth_l1(),
-            'src_C2_classification': losses.focal()
+            'src_C2_regression'    : losses.smooth_l1(),
+            'src_C1_classification': losses.focal(),
+            'src_C2_classification': losses.focal(),
         },
         optimizer=keras.optimizers.adam(lr=1e-5, clipnorm=0.001)
     )
+    logging.info('model_step1')
+    logging.info(model_step1.summary())
 
-    return model, training_model, prediction_model
-
-
-def create_models_adaptation(backbone_retinanet, backbone, num_classes, weights, multi_gpu=0, freeze_backbone=False):
-    modifier = freeze_model if freeze_backbone else None
-
-    # Keras recommends initialising a multi-gpu model on the CPU to ease weight sharing, and to prevent OOM errors.
-    # optionally wrap in a parallel model
-    src_inputs = keras.layers.Input(shape=(None, None, 3), name='input_src')
-    dst_inputs = keras.layers.Input(shape=(None, None, 3), name='input_dst')
-    if multi_gpu > 1:
-        with tf.device('/cpu:0'):
-            model_src = backbone_retinanet(num_classes, backbone=backbone, nms=True, modifier=modifier, inputs=src_inputs)
-            model_dst = backbone_retinanet(num_classes, backbone=backbone, nms=True, modifier=modifier, inputs=dst_inputs)
-        training_model = multi_gpu_model(model, gpus=multi_gpu)
-
-        # append NMS for prediction only
-#        boxes            = keras.layers.Lambda(lambda x: x[:, :, :4])(detections_d1)
-#        detections_d1    = layers.NonMaximumSuppression(name='nms')([boxes, classification_d1, detections_d1])
-#        prediction_model = keras.models.Model(inputs=model.inputs, outputs=[model.outputs[0], classification_d1, detections_d1)
-    else:
-        src_model = backbone_retinanet(num_classes, backbone=backbone, nms=True, modifier=modifier, inputs=inputs_src)
-        dst_model = backbone_retinanet(num_classes, backbone=backbone, nms=True, modifier=modifier, inputs=inputs_dst)
-        src_regr1 = src_model.outputs[0]
-        src_regr2 = src_model.outputs[1]
-        src_clas1 = src_model.outputs[2]
-        src_clas2 = src_model.outputs[3]
-        dst_regr1 = dst_model.outputs[0]
-        dst_regr2 = dst_model.outputs[1]
-        dst_clas1 = dst_model.outputs[2]
-        dst_clas2 = dst_model.outputs[3]
-        clas_discr = losses.DiscrepancyClassification(name='clas_discr')([dst_clas1, dst_clas2])
-        regr_discr = losses.DiscrepancyRegression(name='regr_discr')([dst_regr1, dst_regr2])
-        inputs = [src_inputs, dst_inputs]
-        outputs=[src_regr1, src_regr2, src_clas1, src_clas2, clas_discr, regr_discr]
-        model = keras.models.Model(inputs=inputs, outputs=outputs, name='retinanet-adapt')
-        model = model_with_weights(model, weights=weights, skip_mismatch=True)
-        training_model   = model
-        prediction_model = model
-
-    # compile model
-    training_model.compile(
+    # Step 2.
+    inputs = [src_inputs, dst_inputs]
+    dst_neg_discr_clas = losses.DiscrepancyClas(name='dst_neg_discr_clas')([dst_C1_clas, dst_C2_clas])
+    outputs = [src_C1_regr, src_C2_regr, src_C1_clas, src_C2_clas, dst_neg_discr_clas]
+    model_G.trainable = False
+    model_C.trainable = True
+    model_step2 = keras.models.Model(inputs=inputs, outputs=outputs, name='adapt-step2')
+    model_step2.compile(
         loss={
-            'regr_src1'  : losses.smooth_l1(),
-            'regr_src2'  : losses.smooth_l1(),
-            'clas_src1'  : losses.focal(),
-            'clas_src2'  : losses.focal(),
-            'clas_discr' : losses.zero_loss,
-            'regr_discr' : losses.zero_loss
+            'src_C1_regression'    : losses.smooth_l1(),
+            'src_C2_regression'    : losses.smooth_l1(),
+            'src_C1_classification': losses.focal(),
+            'src_C2_classification': losses.focal(),
+            'dst_neg_discr_clas'   : losses.zero_loss,
         },
         optimizer=keras.optimizers.adam(lr=1e-5, clipnorm=0.001)
     )
+    logging.info('model_step2')
+    logging.info(model_step2.summary())
 
-    return model, training_model, prediction_model
+    # Step 3.
+    inputs = [dst_inputs]
+    dst_discr_clas = losses.DiscrepancyClas(name='dst_discr_clas')([dst_C1_clas, dst_C2_clas])
+    outputs = [dst_discr_clas]
+    model_G.trainable = True
+    model_C.trainable = False
+    model_step3 = keras.models.Model(inputs=inputs, outputs=outputs, name='adapt-step3')
+    model_step3.compile(
+        loss={
+            'dst_discr_clas'       : losses.zero_loss,
+        },
+        optimizer=keras.optimizers.adam(lr=1e-5, clipnorm=0.001)
+    )
+    logging.info('model_step3')
+    logging.info(model_step3.summary())
+
+    prediction_model = retina_model
+
+    return retina_model, model_step1, prediction_model
 
 
 def create_callbacks(model, training_model, prediction_model, validation_generator, args):
@@ -352,17 +343,14 @@ def main(args=None):
             weights = download_imagenet(args.backbone)
 
         logger.info('Creating model, this may take a second...')
-        model, training_model, prediction_model = create_two_doublehead_models(
+        model, training_model, prediction_model = create_adapt_models(
             backbone_retinanet=retinanet,
             backbone=args.backbone,
-            #num_classes=train_generator.num_classes(),
             num_classes=train_generator.generator_src.num_classes(),
             weights=weights,
             multi_gpu=args.multi_gpu,
             freeze_backbone=args.freeze_backbone
         )
-
-    logger.info(model.summary())
 
     # this lets the generator compute backbone layer shapes using the actual backbone model
     if 'vgg' in args.backbone or 'densenet' in args.backbone:

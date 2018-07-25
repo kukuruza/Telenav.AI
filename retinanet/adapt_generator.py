@@ -201,8 +201,10 @@ class AdaptGenerator:
         input_dst = self.generator_tgt.__next__()
         self.logger.debug('next input_src[0] shape: %s' % str(input_src[0].shape))
         self.logger.debug('next input_dst[0] shape: %s' % str(input_dst[0].shape))
-        self.logger.debug('next target_src[0] shape: %s' % str(np.asarray(target_src[0]).shape))
+        self.logger.debug('next target_src shape: %s' % str(len(target_src)))
+        self.logger.debug('next target_src shape: %s' % str(np.asarray(target_src[0]).shape))
+        self.logger.debug('next target_src shape: %s' % str(np.asarray(target_src[1]).shape))
         #return {'input_src': input_src, 'input_dst': input_dst}, {'target_src': target_src}
-        return [input_src, input_dst], target_src
-        #return input_src, target_src
+        return [input_src, input_dst], [target_src[0], target_src[0], target_src[1], target_src[1]]
+        #return [input_src, input_dst], [target_src[0], target_src[0], target_src[1].copy(), target_src[1].copy()]
 
