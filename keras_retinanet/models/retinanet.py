@@ -77,8 +77,10 @@ def default_classification_model(
 
     outputs = keras.layers.Conv2D(
         filters=num_classes * num_anchors,
-        kernel_initializer=keras.initializers.zeros(),
-        bias_initializer=initializers.PriorProbability(probability=prior_probability),
+        # kernel_initializer=keras.initializers.zeros()
+        # TODO: C1 and C2 are different, so had to replace zero init to normal init. Check what will differ.
+        kernel_initializer=keras.initializers.normal(mean=0.0, stddev=0.01, seed=None), 
+#        bias_initializer=initializers.PriorProbability(probability=prior_probability),  TODO: see /clone_model
         name='pyramid_classification',
         **options
     )(outputs)
@@ -295,7 +297,8 @@ def retinanet(
         ```
         [
            model_G              : Generator. Inputs images, outputs a list of features from all feature pyramid layers.
-           model_C              : Classifier. Inputs the result of model_G, outputs [regression, classification].
+           model_C1             : Classifier #1. Inputs the result of model_G, outputs [regression, classification].
+           model_C2             : Classifier #2. Inputs the result of model_G, outputs [regression, classification].
            model_A              : Anchors. Inputs the result of model_G, outputs 'anchors'.
         ]
         ```
@@ -323,16 +326,20 @@ def retinanet(
     ]
     logger.info('Inputs_C: %s' % str(inputs_C))
 
-    # for all pyramid levels, run available submodels
+    # for all pyramid levels, run available submodels, classifier 1.
     pyramids = __build_pyramid(submodels, inputs_C)
-    model_C = keras.models.Model(inputs=inputs_C, outputs=pyramids, name='C')
+    model_C1 = keras.models.Model(inputs=inputs_C, outputs=pyramids, name='C1')
     logger.info('Pyramids: %s' % str(pyramids))
+
+    # for all pyramid levels, run available submodels, classifier 2.
+    # In order to use clone_model, I had to abandon initializers.PriorProbability. TODO: bring it back.
+    model_C2 = keras.models.clone_model(model_C1)
 
     anchors  = __build_anchors(anchor_parameters, inputs_C)
     model_A = keras.models.Model(inputs=inputs_C, outputs=anchors, name='A')
     logger.info('Anchors: %s' % str(anchors))
 
-    return model_G, model_C, model_A
+    return model_G, model_C1, model_C2, model_A
 
 
 def retinanet_bbox(
@@ -359,22 +366,22 @@ def retinanet_bbox(
         The order is as defined in submodels. Using default values the output is:
         ```
         [
-            regression, classification, boxes
+            regressionC1, classificationC1, boxes
         ]
         ```
     """
     logger = logging.getLogger(__name__)
 
-    model_G, model_C, model_A = retinanet(inputs=inputs, num_classes=num_classes, **kwargs)
+    model_G, model_C1, model_C2, model_A = retinanet(inputs=inputs, num_classes=num_classes, **kwargs)
 
     # we expect the anchors, regression and classification values as first output
     features       = model_G.outputs
     anchors        = model_A(features)
-    pipeline       = model_C(features)
-    regression     = pipeline[0]
-    classification = pipeline[1]
-    logger.info('Regression: %s' % str(regression))
-    logger.info('Classification: %s' % str(classification))
+    pipeline1      = model_C1(features)
+    regression     = pipeline1[0]
+    classification = pipeline1[1]
+    logger.info('Regression on C1: %s' % str(regression))
+    logger.info('Classification on C1: %s' % str(classification))
 
     # apply predicted regression to anchors
     boxes = layers.RegressBoxes(name='boxes')([anchors, regression])
@@ -389,4 +396,4 @@ def retinanet_bbox(
         outputs            += [nms_classification]
 
     # construct the model
-    return keras.models.Model(inputs=inputs, outputs=outputs, name=name)
+    return keras.models.Model(inputs=inputs, outputs=outputs, name=name), model_G, model_C1, model_C2

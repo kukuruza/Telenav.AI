@@ -43,7 +43,7 @@ def model_with_weights(model, weights, skip_mismatch):
     return model
 
 
-def create_two_singlehead_models(backbone_retinanet, backbone, num_classes, weights, multi_gpu=0, freeze_backbone=False):
+def create_two_doublehead_models(backbone_retinanet, backbone, num_classes, weights, multi_gpu=0, freeze_backbone=False):
     modifier = freeze_model if freeze_backbone else None
 
     # Keras recommends initialising a multi-gpu model on the CPU to ease weight sharing, and to prevent OOM errors.
@@ -53,15 +53,21 @@ def create_two_singlehead_models(backbone_retinanet, backbone, num_classes, weig
     if multi_gpu > 1:
         assert False
     else:
-        retina_model = backbone_retinanet(num_classes, backbone=backbone, nms=True, modifier=modifier)
-        logging.info('Model outputs: %s' % retina_model.outputs)
-        src_outputs = retina_model(src_inputs)
-        dst_outputs = retina_model(dst_inputs)
-        src_regr = Lambda(lambda x: x, name='src_regression')(src_outputs[0])
-        src_clas = Lambda(lambda x: x, name='src_classification')(src_outputs[1])
+        retina_model, model_G, model_C1, model_C2 = backbone_retinanet(num_classes, backbone=backbone, nms=True, modifier=modifier)
+        logging.info(model_C1.summary())
+        logging.info(model_C2.summary())
+        src_G_outputs = model_G(src_inputs)
+        src_C1_outputs = model_C1(src_G_outputs)
+        src_C2_outputs = model_C2(src_G_outputs)
+        src_C1_regr_src = Lambda(lambda x: x, name='src_C1_regression')(src_C1_outputs[0])
+        src_C1_clas_src = Lambda(lambda x: x, name='src_C1_classification')(src_C1_outputs[1])
+        src_C2_regr_src = Lambda(lambda x: x, name='src_C2_regression')(src_C2_outputs[0])
+        src_C2_clas_src = Lambda(lambda x: x, name='src_C2_classification')(src_C2_outputs[1])
         inputs = [src_inputs, dst_inputs]
-        outputs = [src_regr, src_clas]
+        outputs = [src_C1_regr_src, src_C1_clas_src, src_C2_regr_src, src_C2_clas_src]
         model = keras.models.Model(inputs=inputs, outputs=outputs, name='retinanet-adapt')
+        logging.info('Adapt outputs: %s' % str(retina_model.outputs))
+
         model = model_with_weights(model, weights=weights, skip_mismatch=True)
         training_model   = model
         prediction_model = model
@@ -69,8 +75,8 @@ def create_two_singlehead_models(backbone_retinanet, backbone, num_classes, weig
     # compile model
     training_model.compile(
         loss={
-            'src_regression'    : losses.smooth_l1(),
-            'src_classification': losses.focal()
+            'src_C1_regression'    : losses.smooth_l1(),
+            'src_C2_classification': losses.focal()
         },
         optimizer=keras.optimizers.adam(lr=1e-5, clipnorm=0.001)
     )
@@ -346,7 +352,7 @@ def main(args=None):
             weights = download_imagenet(args.backbone)
 
         logger.info('Creating model, this may take a second...')
-        model, training_model, prediction_model = create_two_singlehead_models(
+        model, training_model, prediction_model = create_two_doublehead_models(
             backbone_retinanet=retinanet,
             backbone=args.backbone,
             #num_classes=train_generator.num_classes(),
