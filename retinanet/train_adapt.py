@@ -9,12 +9,14 @@ import argparse
 import functools
 import os
 import sys
+import numpy as np
 import warnings
 import logging
 import keras
 import keras.preprocessing.image
 from keras.utils import multi_gpu_model
 import tensorflow as tf
+import progressbar
 
 from keras.layers import Lambda
 from keras_retinanet import losses
@@ -30,6 +32,7 @@ import apollo_python_common.log_util as log_util
 from retinanet.traffic_signs_generator import TrafficSignsGenerator
 from retinanet.traffic_signs_eval import TrafficSignsEval
 from retinanet.adapt_generator import ImageFolderGenerator, AdaptGenerator
+from utils import Logger
 
 def get_session():
     config = tf.ConfigProto()
@@ -43,7 +46,7 @@ def model_with_weights(model, weights, skip_mismatch):
     return model
 
 
-def create_adapt_models(backbone_retinanet, backbone, num_classes, weights, multi_gpu=0, freeze_backbone=False):
+def create_models(backbone_retinanet, backbone, num_classes, weights, multi_gpu=0, freeze_backbone=False):
     modifier = freeze_model if freeze_backbone else None
 
     # Keras recommends initialising a multi-gpu model on the CPU to ease weight sharing, and to prevent OOM errors.
@@ -53,7 +56,8 @@ def create_adapt_models(backbone_retinanet, backbone, num_classes, weights, mult
     if multi_gpu > 1:
         assert False
     else:
-        retina_model, model_G, model_C = backbone_retinanet(num_classes, backbone=backbone, nms=True, modifier=modifier)
+        retina_model, model_G, model_C = backbone_retinanet(
+            num_classes, backbone=backbone, nms=True, modifier=modifier, adapt=True)
         model_C = model_with_weights(model_C, weights=weights, skip_mismatch=True)
         logging.info(model_C.summary())
 
@@ -72,7 +76,7 @@ def create_adapt_models(backbone_retinanet, backbone, num_classes, weights, mult
     dst_C2_clas = Lambda(lambda x: x, name='dst_C2_classification')(dst_C_outputs[3])
 
     # Step 1.
-    inputs = [src_inputs, dst_inputs]
+    inputs = [src_inputs]
     outputs = [src_C1_regr, src_C2_regr, src_C1_clas, src_C2_clas]
     model_step1 = keras.models.Model(inputs=inputs, outputs=outputs, name='adapt-step1')
     model_step1.compile(
@@ -88,8 +92,12 @@ def create_adapt_models(backbone_retinanet, backbone, num_classes, weights, mult
     logging.info(model_step1.summary())
 
     # Step 2.
+    # How to use make a part of the model non-trainable:
+    #   https://gist.github.com/naotokui/a9274f12af9d946e99b6df73a5d2af6d
     inputs = [src_inputs, dst_inputs]
-    dst_neg_discr_clas = losses.DiscrepancyClas(name='dst_neg_discr_clas')([dst_C1_clas, dst_C2_clas])
+    #dst_neg_discr_clas = losses.FocalDiscrepancyClas(name='dst_neg_discr_clas', gamma=2, negative=True)([dst_C1_clas, dst_C2_clas])
+    dst_neg_discr_clas = losses.DiscrepancyClas(name='dst_neg_discr_clas', negative=True, alpha=1)([dst_C1_clas, dst_C2_clas])
+    print ('dst_neg_discr_clas', dst_neg_discr_clas.get_shape())
     outputs = [src_C1_regr, src_C2_regr, src_C1_clas, src_C2_clas, dst_neg_discr_clas]
     model_G.trainable = False
     model_C.trainable = True
@@ -104,13 +112,15 @@ def create_adapt_models(backbone_retinanet, backbone, num_classes, weights, mult
         },
         optimizer=keras.optimizers.adam(lr=1e-5, clipnorm=0.001)
     )
-    logging.info('model_step2')
-    logging.info(model_step2.summary())
+    #logging.info('model_step2')
+    #logging.info(model_step2.summary())
 
     # Step 3.
     inputs = [dst_inputs]
-    dst_discr_clas = losses.DiscrepancyClas(name='dst_discr_clas')([dst_C1_clas, dst_C2_clas])
-    outputs = [dst_discr_clas]
+    #dst_discr_clas = losses.FocalDiscrepancyClas(name='dst_discr_clas', gamma=2)([dst_C1_clas, dst_C2_clas])
+    dst_discr_clas = losses.DiscrepancyClas(name='dst_discr_clas', alpha=1)([dst_C1_clas, dst_C2_clas])
+    print ('dst_discr_clas', dst_discr_clas.get_shape())
+    outputs = [dst_discr_clas, dst_C1_clas, dst_C2_clas]
     model_G.trainable = True
     model_C.trainable = False
     model_step3 = keras.models.Model(inputs=inputs, outputs=outputs, name='adapt-step3')
@@ -123,13 +133,11 @@ def create_adapt_models(backbone_retinanet, backbone, num_classes, weights, mult
     logging.info('model_step3')
     logging.info(model_step3.summary())
 
-    prediction_model = retina_model
-
-    return retina_model, model_step1, prediction_model
+    return retina_model, model_step1, model_step2, model_step3
 
 
-def create_callbacks(model, training_model, prediction_model, validation_generator, args):
-    callbacks = []
+def create_callbacks(args):
+    callbacks = {}
 
     # save the prediction model
     if args.snapshots:
@@ -142,34 +150,10 @@ def create_callbacks(model, training_model, prediction_model, validation_generat
             ),
             verbose=1
         )
-        checkpoint = RedirectModel(checkpoint, prediction_model)
-        callbacks.append(checkpoint)
+        #checkpoint = RedirectModel(checkpoint, prediction_model)
+        callbacks['snapshots'] = checkpoint
 
-    tensorboard_callback = None
-
-    if args.tensorboard_dir:
-        tensorboard_callback = keras.callbacks.TensorBoard(
-            log_dir                = args.tensorboard_dir,
-            histogram_freq         = 0,
-            batch_size             = args.batch_size,
-            write_graph            = True,
-            write_grads            = False,
-            write_images           = False,
-            embeddings_freq        = 0,
-            embeddings_layer_names = None,
-            embeddings_metadata    = None
-        )
-        callbacks.append(tensorboard_callback)
-
-    if args.evaluation and validation_generator:
-        if args.dataset_type == 'traffic_signs':
-            # use prediction model for evaluation
-            ground_truth_proto_file = os.path.join(args.val_path, 'rois.bin')
-            evaluation = TrafficSignsEval(validation_generator, ground_truth_proto_file, os.path.join(args.train_path, 'rois.bin'))
-            evaluation = RedirectModel(evaluation, prediction_model)
-            callbacks.append(evaluation)
-
-    callbacks.append(keras.callbacks.ReduceLROnPlateau(
+    callbacks['ReduceLROnPlateau'] = keras.callbacks.ReduceLROnPlateau(
         monitor  = 'loss',
         factor   = 0.1,
         patience = 2,
@@ -178,7 +162,7 @@ def create_callbacks(model, training_model, prediction_model, validation_generat
         epsilon  = 0.0001,
         cooldown = 0,
         min_lr   = 0
-    ))
+    )
 
     return callbacks
 
@@ -187,7 +171,7 @@ def create_generators(args):
     # create random transform generator for augmenting training data
     transform_generator = random_transform_generator(min_rotation=-0.122173,
                                                      max_rotation=0.122173)
-    train_generator, validation_generator = None, None
+    train_generator = None
 
     if args.dataset_type == 'traffic_signs':
         train_src_generator = TrafficSignsGenerator(
@@ -207,18 +191,9 @@ def create_generators(args):
             image_max_side=2592
         )
         # Combine generators.
-        #train_generator = train_src_generator
         train_generator = AdaptGenerator(train_src_generator, train_dst_generator)
 
-        if args.val_path:
-            validation_generator = TrafficSignsGenerator(
-                args.val_path,
-                None,
-                batch_size=args.batch_size,
-                group_method='random'
-            )
-        
-    return train_generator, validation_generator
+    return train_generator
 
 
 def check_args(parsed_args):
@@ -271,7 +246,6 @@ def parse_args(args):
     ts_parser = subparsers.add_parser('traffic_signs')
     ts_parser.add_argument('train_src_path', help='Path to folder containing files used for train. The rois.bin file should be there.')
     ts_parser.add_argument('train_dst_path', help='Path to folder containing files used for train. The rois.bin file should be there.')
-    ts_parser.add_argument('val_path', help='Path to folder containing files used for validation (optional). The rois.bin file should be there.')
 
     def csv_list(string):
         return string.split(',')
@@ -293,14 +267,13 @@ def parse_args(args):
     parser.add_argument('--snapshot-path',   help='Path to store snapshots of models during training (defaults to \'./snapshots\')', default='./snapshots')
     parser.add_argument('--tensorboard-dir', help='Log directory for Tensorboard output', default='./logs')
     parser.add_argument('--no-snapshots',    help='Disable saving snapshots.', dest='snapshots', action='store_false')
-    parser.add_argument('--no-evaluation',   help='Disable per epoch evaluation.', dest='evaluation', action='store_false')
     parser.add_argument('--freeze-backbone', help='Freeze training of backbone layers.', action='store_true')
-    parser.add_argument('--evaluate_score_threshold', help='Score thresholds to be used for all classes when evaluate.', default=0.5, type=float)
 
     return check_args(parser.parse_args(args))
 
 
 def main(args=None):
+    progressbar.streams.wrap_stderr()
     log_util.config(__file__)
     logger = logging.getLogger(__name__)
     # parse arguments
@@ -317,7 +290,7 @@ def main(args=None):
     keras.backend.tensorflow_backend.set_session(get_session())
 
     # create the generators
-    train_generator, validation_generator = create_generators(args)
+    train_generator = create_generators(args)
 
     if 'resnet' in args.backbone:
         from keras_retinanet.models.resnet import resnet_retinanet as retinanet, custom_objects, download_imagenet
@@ -334,7 +307,6 @@ def main(args=None):
     if args.snapshot is not None:
         logger.info('Loading model, this may take a second...')
         model            = keras.models.load_model(args.snapshot, custom_objects=custom_objects)
-        training_model   = model
         prediction_model = model
     else:
         weights = args.weights
@@ -343,7 +315,7 @@ def main(args=None):
             weights = download_imagenet(args.backbone)
 
         logger.info('Creating model, this may take a second...')
-        model, training_model, prediction_model = create_adapt_models(
+        model, model_step1, model_step2, model_step3 = create_models(
             backbone_retinanet=retinanet,
             backbone=args.backbone,
             num_classes=train_generator.generator_src.num_classes(),
@@ -356,27 +328,57 @@ def main(args=None):
     if 'vgg' in args.backbone or 'densenet' in args.backbone:
         compute_anchor_targets = functools.partial(anchor_targets_bbox, shapes_callback=make_shapes_callback(model))
         train_generator.compute_anchor_targets = compute_anchor_targets
-        if validation_generator is not None:
-            validation_generator.compute_anchor_targets = compute_anchor_targets
-
-    # create the callbacks
-    callbacks = create_callbacks(
-        model,
-        training_model,
-        prediction_model,
-        validation_generator,
-        args,
-    )
 
     # start training
-    training_model.fit_generator(
-        generator=train_generator,
-        steps_per_epoch=args.steps,
-        epochs=args.epochs,
-        verbose=1,
-        callbacks=callbacks,
-        workers=4
-    )
+#    training_model.fit_generator(
+#        generator=train_generator,
+#        steps_per_epoch=args.steps,
+#        epochs=args.epochs,
+#        verbose=1,
+#        callbacks=callbacks,
+#        workers=4
+#    )
+
+    losses_names1 = model_step1.metrics_names
+    losses_names2 = model_step2.metrics_names
+    losses_names3 = model_step3.metrics_names
+    logger.info('losses in steps \n\t1: %s \n\t2: %s \n\t3: %s' % 
+        (losses_names1, losses_names2, losses_names3))
+
+    zeros = np.zeros((args.batch_size,1,1))
+
+    # https://gist.github.com/gyglim/1f8dfb1b5c82627ae3efcfbbadb9f514
+    tensorboard = Logger(args.tensorboard_dir)
+ 
+    for epoch in range(args.epochs):
+        for ibatch, (inputs, targets) in progressbar.ProgressBar()(enumerate(train_generator)):
+
+            losses1 = model_step1.train_on_batch(
+                x=[inputs['src']],
+                y=[targets['src'][0], targets['src'][0], targets['src'][1], targets['src'][1]])
+            logger.info('1: %s' % [str(x) for x in zip(losses_names1, losses1)])
+            for loss_name, loss in zip(losses_names1, losses1):
+                tensorboard.log_scalar('step1/' + loss_name, loss, ibatch)
+
+#            losses2 = model_step2.train_on_batch(
+#                x=[inputs['src'], inputs['dst']],
+#                y=[targets['src'][0], targets['src'][0], targets['src'][1], targets['src'][1], zeros])
+#            logger.info('2: %s' % [str(x) for x in zip(losses_names2, losses2)])
+#            for loss_name, loss in zip(losses_names2, losses2):
+#                tensorboard.log_scalar('step2/' + loss_name, loss, ibatch)
+#            predict2 = model_step2.predict(x=[inputs['src'], inputs['dst']])
+#            tensorboard.log_histogram('step2/dst_neg_discr', predict2[4].flatten(), ibatch)
+
+#            losses3 = model_step3.train_on_batch(
+#                x=[inputs['dst']],
+#                y=[zeros])
+#            logger.info('3: %s' % str((losses_names3, losses3)))
+#            for loss_name, loss in zip(losses_names3, losses3):
+#                tensorboard.log_scalar('step3/' + loss_name, loss, ibatch)
+#            predict3 = model_step3.predict(x=[inputs['dst']])
+#            tensorboard.log_histogram('step3/dst_discr', predict3[0].flatten(), ibatch)
+#            tensorboard.log_histogram('step3/dst_C1', predict3[1].flatten(), ibatch)
+#            tensorboard.log_histogram('step3/dst_C2', predict3[2].flatten(), ibatch)
 
 
 if __name__ == '__main__':

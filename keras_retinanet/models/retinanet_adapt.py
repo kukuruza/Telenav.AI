@@ -19,6 +19,7 @@ from .. import initializers
 from .. import layers
 from .. import losses
 
+import logging
 import numpy as np
 
 """
@@ -63,30 +64,58 @@ def default_classification_model(
     }
 
     inputs  = keras.layers.Input(shape=(None, None, pyramid_feature_size))
-    outputs = inputs
+    outputs1 = inputs
     for i in range(4):
-        outputs = keras.layers.Conv2D(
+        outputs1 = keras.layers.Conv2D(
             filters=classification_feature_size,
             activation='relu',
-            name='pyramid_classification_{}'.format(i),
+            name='pyramid_classification1_{}'.format(i),
             kernel_initializer=keras.initializers.normal(mean=0.0, stddev=0.01, seed=None),
             bias_initializer='zeros',
             **options
-        )(outputs)
+        )(outputs1)
 
-    outputs = keras.layers.Conv2D(
+    outputs1 = keras.layers.Conv2D(
         filters=num_classes * num_anchors,
+        # TODO: C1 and C2 are different, so had to replace zero init to normal init. Check what will differ.
         kernel_initializer=keras.initializers.zeros(),
+        #kernel_initializer=keras.initializers.normal(mean=0.0, stddev=0.01, seed=None), 
         bias_initializer=initializers.PriorProbability(probability=prior_probability),
-        name='pyramid_classification',
+        name='pyramid_classification1',
         **options
-    )(outputs)
+    )(outputs1)
 
     # reshape output and apply sigmoid
-    outputs = keras.layers.Reshape((-1, num_classes), name='pyramid_classification_reshape')(outputs)
-    outputs = keras.layers.Activation('sigmoid', name='pyramid_classification_sigmoid')(outputs)
+    outputs1 = keras.layers.Reshape((-1, num_classes), name='pyramid_classification_reshape1')(outputs1)
+    outputs1 = keras.layers.Activation('sigmoid', name='pyramid_classification_sigmoid1')(outputs1)
 
-    return keras.models.Model(inputs=inputs, outputs=outputs, name=name)
+    outputs2 = inputs
+    for i in range(4):
+        outputs2 = keras.layers.Conv2D(
+            filters=classification_feature_size,
+            activation='relu',
+            name='pyramid_classification2_{}'.format(i),
+            kernel_initializer=keras.initializers.normal(mean=0.0, stddev=0.01, seed=None),
+            bias_initializer='zeros',
+            **options
+        )(outputs2)
+
+    outputs2 = keras.layers.Conv2D(
+        filters=num_classes * num_anchors,
+        # TODO: C1 and C2 are different, so had to replace zero init to normal init. Check what will differ.
+        kernel_initializer=keras.initializers.zeros(),
+        #kernel_initializer=keras.initializers.normal(mean=0.0, stddev=0.01, seed=None), 
+        bias_initializer=initializers.PriorProbability(probability=prior_probability),
+        name='pyramid_classification2',
+        **options
+    )(outputs2)
+
+    # reshape output and apply sigmoid
+    outputs2 = keras.layers.Reshape((-1, num_classes), name='pyramid_classification_reshape2')(outputs2)
+    outputs2 = keras.layers.Activation('sigmoid', name='pyramid_classification_sigmoid2')(outputs2)
+
+    return keras.models.Model(inputs=inputs, outputs=outputs1, name=name+'1'), \
+           keras.models.Model(inputs=inputs, outputs=outputs2, name=name+'2')
 
 
 def default_regression_model(num_anchors, pyramid_feature_size=256, regression_feature_size=256, name='regression_submodel'):
@@ -113,19 +142,32 @@ def default_regression_model(num_anchors, pyramid_feature_size=256, regression_f
     }
 
     inputs  = keras.layers.Input(shape=(None, None, pyramid_feature_size))
-    outputs = inputs
+    outputs1 = inputs
     for i in range(4):
-        outputs = keras.layers.Conv2D(
+        outputs1 = keras.layers.Conv2D(
             filters=regression_feature_size,
             activation='relu',
-            name='pyramid_regression_{}'.format(i),
+            name='pyramid_regression1_{}'.format(i),
             **options
-        )(outputs)
+        )(outputs1)
 
-    outputs = keras.layers.Conv2D(num_anchors * 4, name='pyramid_regression', **options)(outputs)
-    outputs = keras.layers.Reshape((-1, 4), name='pyramid_regression_reshape')(outputs)
+    outputs1 = keras.layers.Conv2D(num_anchors * 4, name='pyramid_regression1', **options)(outputs1)
+    outputs1 = keras.layers.Reshape((-1, 4), name='pyramid_regression_reshape1')(outputs1)
 
-    return keras.models.Model(inputs=inputs, outputs=outputs, name=name)
+    outputs2 = inputs
+    for i in range(4):
+        outputs2 = keras.layers.Conv2D(
+            filters=regression_feature_size,
+            activation='relu',
+            name='pyramid_regression2_{}'.format(i),
+            **options
+        )(outputs2)
+
+    outputs2 = keras.layers.Conv2D(num_anchors * 4, name='pyramid_regression2', **options)(outputs2)
+    outputs2 = keras.layers.Reshape((-1, 4), name='pyramid_regression_reshape2')(outputs2)
+
+    return keras.models.Model(inputs=inputs, outputs=outputs1, name=name+'1'), \
+           keras.models.Model(inputs=inputs, outputs=outputs2, name=name+'2')
 
 
 def __create_pyramid_features(C3, C4, C5, feature_size=256):
@@ -207,9 +249,13 @@ def default_submodels(num_classes, anchor_parameters):
     Returns
         A list of tuple, where the first element is the name of the submodel and the second element is the submodel itself.
     """
+    regression1, regression2 = default_regression_model(anchor_parameters.num_anchors())
+    classification1, classification2 = default_classification_model(num_classes, anchor_parameters.num_anchors())
     return [
-        ('regression', default_regression_model(anchor_parameters.num_anchors())),
-        ('classification', default_classification_model(num_classes, anchor_parameters.num_anchors()))
+        ('regression1', regression1),
+        ('regression2', regression2),
+        ('classification1', classification1),
+        ('classification2', classification2),
     ]
 
 
@@ -290,15 +336,18 @@ def retinanet(
         name                    : Name of the model.
 
     Returns
-        A keras.models.Model which takes an image as input and outputs generated anchors and the result from each submodel on every pyramid level.
-
-        The order of the outputs is as defined in submodels. Using default values the output is:
+        Three keras.models.Models.
         ```
         [
-            anchors, regression, classification
+           model_G              : Generator. Inputs images, outputs a list of features from all feature pyramid layers.
+           model_C1             : Classifier #1. Inputs the result of model_G, outputs [regression, classification].
+           model_C2             : Classifier #2. Inputs the result of model_G, outputs [regression, classification].
+           model_A              : Anchors. Inputs the result of model_G, outputs 'anchors'.
         ]
         ```
     """
+    logger = logging.getLogger(__name__)
+
     if submodels is None:
         submodels = default_submodels(num_classes, anchor_parameters)
 
@@ -306,18 +355,33 @@ def retinanet(
 
     # compute pyramid features as per https://arxiv.org/abs/1708.02002
     features = create_pyramid_features(C3, C4, C5)
+    model_G = keras.models.Model(inputs=inputs, outputs=features, name='G')
+    logger.info('Features: %s' % str(features))
 
-    # for all pyramid levels, run available submodels
-    pyramids = __build_pyramid(submodels, features)
-    anchors  = __build_anchors(anchor_parameters, features)
+    pyramid_feature_size = features[0].get_shape()[3]
+    logger.info('Pyramid_feature_size: %d' % pyramid_feature_size)
+    inputs_C  = [
+      keras.layers.Input(shape=(None, None, pyramid_feature_size), name='P3'),
+      keras.layers.Input(shape=(None, None, pyramid_feature_size), name='P4'),
+      keras.layers.Input(shape=(None, None, pyramid_feature_size), name='P5'),
+      keras.layers.Input(shape=(None, None, pyramid_feature_size), name='P6'),
+      keras.layers.Input(shape=(None, None, pyramid_feature_size), name='P7')
+    ]
+    logger.info('Inputs_C: %s' % str(inputs_C))
 
-    # concatenate outputs to one list
-    outputs = [anchors] + pyramids
+    # for all pyramid levels, run available submodels, classifier 1.
+    pyramids = __build_pyramid(submodels, inputs_C)
+    model_C = keras.models.Model(inputs=inputs_C, outputs=pyramids, name='C')
+    logger.info('Pyramids: %s' % str(pyramids))
 
-    return keras.models.Model(inputs=inputs, outputs=outputs, name=name)
+    anchors  = __build_anchors(anchor_parameters, inputs_C)
+    model_A = keras.models.Model(inputs=inputs_C, outputs=anchors, name='A')
+    logger.info('Anchors: %s' % str(anchors))
+
+    return model_G, model_C, model_A
 
 
-def _retinanet_bbox(
+def retinanet_bbox(
     inputs,
     num_classes,
     nms        = True,
@@ -341,26 +405,30 @@ def _retinanet_bbox(
         The order is as defined in submodels. Using default values the output is:
         ```
         [
-            regression, classification, boxes
+            regressionC1, classificationC1, boxes
         ]
         ```
     """
-    model = retinanet(inputs=inputs, num_classes=num_classes, **kwargs)
+    logger = logging.getLogger(__name__)
+
+    model_G, model_C, model_A = retinanet(inputs=inputs, num_classes=num_classes, **kwargs)
 
     # we expect the anchors, regression and classification values as first output
-    anchors        = model.outputs[0]
-    regression     = model.outputs[1]
-    classification = model.outputs[2]
-
-    # "other" can be any additional output from custom submodels, by default this will be []
-    other = model.outputs[3:]
+    features       = model_G.outputs
+    anchors        = model_A(features)
+    pipeline       = model_C(features)
+    logger.info('Pipeline: %s' % str(pipeline))
+    regression     = pipeline[0]
+    classification = pipeline[2]
+    logger.info('Regression on C1: %s' % str(regression))
+    logger.info('Classification on C1: %s' % str(classification))
 
     # apply predicted regression to anchors
     boxes = layers.RegressBoxes(name='boxes')([anchors, regression])
     boxes = layers.ClipBoxes(name='clipped_boxes')([inputs, boxes])
 
     # construct list of outputs
-    outputs = [regression, classification] + other + [boxes]
+    outputs = [regression, classification, boxes]
 
     # optionally apply non maximum suppression
     if nms:
@@ -368,13 +436,4 @@ def _retinanet_bbox(
         outputs            += [nms_classification]
 
     # construct the model
-    return keras.models.Model(inputs=inputs, outputs=outputs, name=name)
-
-
-def retinanet_bbox(adapt=False, **kwargs):
-    if adapt:
-        from .retinanet_adapt import retinanet_bbox as retinanet_bbox_adapt
-        return retinanet_bbox_adapt(**kwargs)
-    else:
-        return _retinanet_bbox(**kwargs)
-
+    return keras.models.Model(inputs=inputs, outputs=outputs, name=name), model_G, model_C

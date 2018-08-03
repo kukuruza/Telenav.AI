@@ -16,6 +16,7 @@ limitations under the License.
 
 import keras
 from . import backend
+from keras.engine.topology import Layer
 
 
 def focal(alpha=0.25, gamma=2.0):
@@ -79,49 +80,55 @@ def smooth_l1(sigma=3.0):
     return _smooth_l1
 
 
-from keras.engine.topology import Layer
 
 
-def discrepancy_clas(inputs1, inputs2):
-    ''' inputs1, inputs2 are tensors of shape (?, ?, num_classes) '''
-    label_axis = 2
-    #inputs1 = keras.backend.softmax(inputs1) # FIXME when have TF1.6:   , axis=label_axis)
-    #inputs2 = keras.backend.softmax(inputs2) # FIXME same:  , axis=label_axis)
-    diff = keras.backend.abs(inputs1 - inputs2)
-    print ('keras.backend.mean(diff)', keras.backend.mean(diff).get_shape())
-    return keras.backend.mean(diff)
+class FocalDiscrepancyClas(Layer):
+    def __init__(self, negative=False, gamma=2.0, **kwargs):
+        super(FocalDiscrepancyClas, self).__init__(**kwargs)
+        self.negative = negative
+        self.gamma = gamma
+
+    def call(self, x, mask=None):
+
+        # Compute the focal weight.
+        xavg = (x[0] + x[1]) / 2.
+        focal_weight = (xavg * (1 - xavg)) ** (self.gamma / 2.)
+
+        loss = keras.backend.abs(x[0] - x[1]) * focal_weight
+        #self.add_loss(loss, x)
+        if self.negative:
+            return -loss
+        else:
+            return loss
+
+    def get_output_shape(self, input_shape):
+        return (1,)
+
+# A loss that would penalize a value not being equal to zero:
+#   https://github.com/keras-team/keras/issues/5563
 
 class DiscrepancyClas(Layer):
-    def __init__(self, **kwargs):
+    def __init__(self, negative=False, alpha=1, **kwargs):
         super(DiscrepancyClas, self).__init__(**kwargs)
+        self.negative = negative
+        self.alpha = alpha
 
     def call(self, x, mask=None):
-        loss = discrepancy_clas(x[0], x[1])
-        self.add_loss(loss, x)
-        return loss
+
+        loss = keras.backend.abs(x[0] - x[1]) * self.alpha
+        #self.add_loss(loss, x)
+        if self.negative:
+            return -loss
+        else:
+            return loss
 
     def get_output_shape(self, input_shape):
-        #return (input_shape[0][0],1)  # TODO: confirm
         return (1,)
-
- 
-def discrepancy_regr(inputs1, inputs2):
-    return keras.backend.mean(keras.backend.abs(inputs1 - inputs2))
-
-class DiscrepancyRegr(Layer):
-    def __init__(self, **kwargs):
-        super(DiscrepancyRegr, self).__init__(**kwargs)
-
-    def call(self, x, mask=None):
-        loss = discrepancy_regr(x[0], x[1])
-        self.add_loss(loss, x)
-        return loss
-
-    def get_output_shape(self, input_shape):
-        #return (input_shape[0][0],1)  # TODO: confirm
-        return (1,)
-
 
 def zero_loss(y_true, y_pred):
-    return keras.backend.zeros_like(y_pred)  # Need to fix shape.
+    return keras.backend.sum(y_pred) # keras.backend.zeros_like(y_pred)  # Need to fix shape.
+
+def no_loss(y_true, y_pred):
+    return keras.backend.zeros_like(y_pred)
+
 

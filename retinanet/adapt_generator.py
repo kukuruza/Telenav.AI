@@ -185,6 +185,7 @@ class ImageFolderGenerator(ImageOnlyGenerator):
         return apollo_python_common.image.get_size(self.image_path(image_index))
 
     def load_image(self, image_index):
+        print (self.image_path(image_index))
         img = apollo_python_common.image.get_bgr(self.image_path(image_index))
         return img
 
@@ -204,7 +205,11 @@ class AdaptGenerator:
         self.logger.debug('next target_src shape: %s' % str(len(target_src)))
         self.logger.debug('next target_src shape: %s' % str(np.asarray(target_src[0]).shape))
         self.logger.debug('next target_src shape: %s' % str(np.asarray(target_src[1]).shape))
-        #return {'input_src': input_src, 'input_dst': input_dst}, {'target_src': target_src}
-        return [input_src, input_dst], [target_src[0], target_src[0], target_src[1], target_src[1]]
-        #return [input_src, input_dst], [target_src[0], target_src[0], target_src[1].copy(), target_src[1].copy()]
+        return {'src': input_src, 'dst': input_dst}, {'src': target_src}
+        #return [input_src, input_dst], [target_src[0], target_src[0], target_src[1], target_src[1]]
 
+    def __iter__(self):
+        return self
+
+    def __len__(self):
+        return min(self.generator_src.size(), self.generator_tgt.size())
