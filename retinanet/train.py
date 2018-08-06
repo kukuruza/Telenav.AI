@@ -15,6 +15,7 @@ import keras
 import keras.preprocessing.image
 from keras.utils import multi_gpu_model
 import tensorflow as tf
+import progressbar
 
 from keras_retinanet import losses
 from keras_retinanet import layers
@@ -28,6 +29,7 @@ import apollo_python_common.io_utils as io_utils
 import apollo_python_common.log_util as log_util
 from retinanet.traffic_signs_generator import TrafficSignsGenerator
 from retinanet.traffic_signs_eval import TrafficSignsEval
+from utils import Logger as TFLogger
 
 
 def get_session():
@@ -295,24 +297,35 @@ def main(args=None):
         if validation_generator is not None:
             validation_generator.compute_anchor_targets = compute_anchor_targets
 
-    # create the callbacks
-    callbacks = create_callbacks(
-        model,
-        training_model,
-        prediction_model,
-        validation_generator,
-        args,
-    )
+#    # create the callbacks
+#    callbacks = create_callbacks(
+#        model,
+#        training_model,
+#        prediction_model,
+#        validation_generator,
+#        args,
+#    )
+
+    # https://gist.github.com/gyglim/1f8dfb1b5c82627ae3efcfbbadb9f514
+    tensorboard = TFLogger(args.tensorboard_dir)
+    losses_names = training_model.metrics_names
+
+    for epoch in range(args.epochs):
+        for ibatch, (inputs, targets) in progressbar.ProgressBar()(enumerate(train_generator)):
+            losses = training_model.train_on_batch(x=inputs, y=targets)
+
+            for loss_name, loss in zip(losses_names, losses):
+                tensorboard.log_scalar('loss/' + loss_name, loss, ibatch)
 
     # start training
-    training_model.fit_generator(
-        generator=train_generator,
-        steps_per_epoch=args.steps,
-        epochs=args.epochs,
-        verbose=1,
-        callbacks=callbacks,
-        workers=4
-    )
+#    training_model.fit_generator(
+#        generator=train_generator,
+#        steps_per_epoch=args.steps,
+#        epochs=args.epochs,
+#        verbose=1,
+#        callbacks=callbacks,
+#        workers=4
+#    )
 
 
 if __name__ == '__main__':

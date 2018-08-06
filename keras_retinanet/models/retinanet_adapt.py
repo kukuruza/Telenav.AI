@@ -78,8 +78,8 @@ def default_classification_model(
     outputs1 = keras.layers.Conv2D(
         filters=num_classes * num_anchors,
         # TODO: C1 and C2 are different, so had to replace zero init to normal init. Check what will differ.
-        kernel_initializer=keras.initializers.zeros(),
-        #kernel_initializer=keras.initializers.normal(mean=0.0, stddev=0.01, seed=None), 
+        #kernel_initializer=keras.initializers.zeros(),
+        kernel_initializer=keras.initializers.normal(mean=0.0, stddev=0.1, seed=None), 
         bias_initializer=initializers.PriorProbability(probability=prior_probability),
         name='pyramid_classification1',
         **options
@@ -103,8 +103,8 @@ def default_classification_model(
     outputs2 = keras.layers.Conv2D(
         filters=num_classes * num_anchors,
         # TODO: C1 and C2 are different, so had to replace zero init to normal init. Check what will differ.
-        kernel_initializer=keras.initializers.zeros(),
-        #kernel_initializer=keras.initializers.normal(mean=0.0, stddev=0.01, seed=None), 
+        #kernel_initializer=keras.initializers.zeros(),
+        kernel_initializer=keras.initializers.normal(mean=0.0, stddev=0.1, seed=None), 
         bias_initializer=initializers.PriorProbability(probability=prior_probability),
         name='pyramid_classification2',
         **options
@@ -142,32 +142,19 @@ def default_regression_model(num_anchors, pyramid_feature_size=256, regression_f
     }
 
     inputs  = keras.layers.Input(shape=(None, None, pyramid_feature_size))
-    outputs1 = inputs
+    outputs = inputs
     for i in range(4):
         outputs1 = keras.layers.Conv2D(
             filters=regression_feature_size,
             activation='relu',
             name='pyramid_regression1_{}'.format(i),
             **options
-        )(outputs1)
+        )(outputs)
 
-    outputs1 = keras.layers.Conv2D(num_anchors * 4, name='pyramid_regression1', **options)(outputs1)
-    outputs1 = keras.layers.Reshape((-1, 4), name='pyramid_regression_reshape1')(outputs1)
+    outputs = keras.layers.Conv2D(num_anchors * 4, name='pyramid_regression1', **options)(outputs)
+    outputs = keras.layers.Reshape((-1, 4), name='pyramid_regression_reshape1')(outputs)
 
-    outputs2 = inputs
-    for i in range(4):
-        outputs2 = keras.layers.Conv2D(
-            filters=regression_feature_size,
-            activation='relu',
-            name='pyramid_regression2_{}'.format(i),
-            **options
-        )(outputs2)
-
-    outputs2 = keras.layers.Conv2D(num_anchors * 4, name='pyramid_regression2', **options)(outputs2)
-    outputs2 = keras.layers.Reshape((-1, 4), name='pyramid_regression_reshape2')(outputs2)
-
-    return keras.models.Model(inputs=inputs, outputs=outputs1, name=name+'1'), \
-           keras.models.Model(inputs=inputs, outputs=outputs2, name=name+'2')
+    return keras.models.Model(inputs=inputs, outputs=outputs, name=name)
 
 
 def __create_pyramid_features(C3, C4, C5, feature_size=256):
@@ -249,11 +236,10 @@ def default_submodels(num_classes, anchor_parameters):
     Returns
         A list of tuple, where the first element is the name of the submodel and the second element is the submodel itself.
     """
-    regression1, regression2 = default_regression_model(anchor_parameters.num_anchors())
+    regression = default_regression_model(anchor_parameters.num_anchors())
     classification1, classification2 = default_classification_model(num_classes, anchor_parameters.num_anchors())
     return [
-        ('regression1', regression1),
-        ('regression2', regression2),
+        ('regression', regression),
         ('classification1', classification1),
         ('classification2', classification2),
     ]
@@ -419,8 +405,8 @@ def retinanet_bbox(
     pipeline       = model_C(features)
     logger.info('Pipeline: %s' % str(pipeline))
     regression     = pipeline[0]
-    classification = pipeline[2]
-    logger.info('Regression on C1: %s' % str(regression))
+    classification = pipeline[1]
+    logger.info('Regression: %s' % str(regression))
     logger.info('Classification on C1: %s' % str(classification))
 
     # apply predicted regression to anchors

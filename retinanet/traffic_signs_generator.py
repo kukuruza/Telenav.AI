@@ -122,3 +122,6 @@ class TrafficSignsGenerator(Generator):
 
         return boxes
 
+    def __iter__(self):
+        return self
+

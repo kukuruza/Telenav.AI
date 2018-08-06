@@ -185,7 +185,7 @@ class ImageFolderGenerator(ImageOnlyGenerator):
         return apollo_python_common.image.get_size(self.image_path(image_index))
 
     def load_image(self, image_index):
-        print (self.image_path(image_index))
+        #self.logger.info(self.image_path(image_index))
         img = apollo_python_common.image.get_bgr(self.image_path(image_index))
         return img
 
