@@ -10,7 +10,6 @@ import functools
 import os
 import sys
 import numpy as np
-np.set_printoptions(linewidth=200)
 import warnings
 import logging
 import keras
@@ -29,7 +28,6 @@ from keras_retinanet.utils.keras_version import check_keras_version
 from keras_retinanet.utils.anchors import make_shapes_callback, anchor_targets_bbox
 from keras_retinanet.utils.model import freeze as freeze_model
 import apollo_python_common.io_utils as io_utils
-import apollo_python_common.log_util as log_util
 from retinanet.traffic_signs_generator import TrafficSignsGenerator
 from retinanet.traffic_signs_eval import TrafficSignsEval
 from retinanet.adapt_generator import ImageFolderGenerator, AdaptGenerator
@@ -208,7 +206,6 @@ def parse_args():
     def csv_list(string):
         return string.split(',')
 
-
     group = parser.add_mutually_exclusive_group()
     group.add_argument('--snapshot',          help='Resume training from a snapshot.')
     group.add_argument('--imagenet-weights',  help='Initialize the model with pretrained imagenet weights. This is the default behaviour.', action='store_const', const=True, default=True)
@@ -225,15 +222,17 @@ def parse_args():
     parser.add_argument('--tensorboard-dir', help='Log directory for Tensorboard output', default='./logs')
     parser.add_argument('--no-snapshots',    help='Disable saving snapshots.', dest='snapshots', action='store_false')
     parser.add_argument('--freeze-backbone', help='Freeze training of backbone layers.', action='store_true')
+    parser.add_argument('--logging',         required=True, type=int, choices=[10, 20, 30, 40], help='Log debug (10), info (20), warning (30), error (40).')
+    parser.add_argument('--debug_steps',     nargs='+', type=int, choices=[1, 2, 3], default=[1, 2, 3], help='Which out of the tree steps to run.')
 
     return check_args(parser.parse_args())
 
 
 def main():
     progressbar.streams.wrap_stderr()
-    log_util.config(__file__)
-    logger = logging.getLogger(__name__)
     args = parse_args()
+    logging.basicConfig(level=args.logging, format='%(levelname)s: %(message)s')
+    logger = logging.getLogger(__name__)
 
     # make sure keras is the minimum required version
     check_keras_version()
@@ -279,11 +278,6 @@ def main():
             tensorboard=tensorboard,
         )
 
-    # this lets the generator compute backbone layer shapes using the actual backbone model
-    if 'vgg' in args.backbone or 'densenet' in args.backbone:
-        compute_anchor_targets = functools.partial(anchor_targets_bbox, shapes_callback=make_shapes_callback(model))
-        train_generator.compute_anchor_targets = compute_anchor_targets
-
     losses_names1 = model_step1.metrics_names
     losses_names2 = model_step2.metrics_names
     losses_names3 = model_step3.metrics_names
@@ -304,33 +298,35 @@ def main():
                             tensorboard.log_histogram('clas/%s/biases' % layerin.name, layerin.get_weights()[1], ibatch)
                         assert not hasattr(layerin, 'layers'), layerin.layers
 
-            losses1 = model_step1.train_on_batch(
-                x=[inputs['src']],
-                y=[targets['src'][0], targets['src'][1], targets['src'][1]])
-            logger.info('1: %s' % [str(x) for x in zip(losses_names1, losses1)])
-            for loss_name, loss in zip(losses_names1, losses1):
-                tensorboard.log_scalar('step1/' + loss_name, loss, ibatch)
+            if 1 in args.debug_steps:
+                losses1 = model_step1.train_on_batch(
+                    x=[inputs['src']],
+                    y=[targets['src'][0], targets['src'][1], targets['src'][1]])
+                logger.debug('1: %s' % [str(x) for x in zip(losses_names1, losses1)])
+                for loss_name, loss in zip(losses_names1, losses1):
+                    tensorboard.log_scalar('step1/' + loss_name, loss, ibatch)
 
-            losses2 = model_step2.train_on_batch(
-                x=[inputs['src'], inputs['dst']],
-                y=[targets['src'][1], targets['src'][1], zeros])
-            logger.info('2: %s' % [str(x) for x in zip(losses_names2, losses2)])
-            for loss_name, loss in zip(losses_names2, losses2):
-                tensorboard.log_scalar('step2/' + loss_name, loss, ibatch)
-            predict2 = model_step2.predict(x=[inputs['src'], inputs['dst']])
-            tensorboard.log_histogram('step2/dst_neg_discr', predict2[2].flatten(), ibatch)
+            if 2 in args.debug_steps:
+                losses2 = model_step2.train_on_batch(
+                    x=[inputs['src'], inputs['dst']],
+                    y=[targets['src'][1], targets['src'][1], zeros])
+                logger.debug('2: %s' % [str(x) for x in zip(losses_names2, losses2)])
+                for loss_name, loss in zip(losses_names2, losses2):
+                    tensorboard.log_scalar('step2/' + loss_name, loss, ibatch)
+                predict2 = model_step2.predict(x=[inputs['src'], inputs['dst']])
+                tensorboard.log_histogram('step2/dst_neg_discr', predict2[2].flatten(), ibatch)
 
-            losses3 = model_step3.train_on_batch(
-                x=[inputs['dst']],
-                y=[zeros])
-            logger.info('3: %s' % str((losses_names3, losses3)))
-            for loss_name, loss in zip(losses_names3, losses3):
-                tensorboard.log_scalar('step3/' + loss_name, loss, ibatch)
-            predict3 = model_step3.predict(x=[inputs['dst']])
-            tensorboard.log_histogram('step3/dst_discr', predict3[0].flatten(), ibatch)
-            tensorboard.log_histogram('step3/dst_C1', predict3[1].flatten(), ibatch)
-            tensorboard.log_histogram('step3/dst_C2', predict3[2].flatten(), ibatch)
-
+            if 3 in args.debug_steps:
+                losses3 = model_step3.train_on_batch(
+                    x=[inputs['dst']],
+                    y=[zeros])
+                logger.debug('3: %s' % str((losses_names3, losses3)))
+                for loss_name, loss in zip(losses_names3, losses3):
+                    tensorboard.log_scalar('step3/' + loss_name, loss, ibatch)
+                predict3 = model_step3.predict(x=[inputs['dst']])
+                tensorboard.log_histogram('step3/dst_discr', predict3[0].flatten(), ibatch)
+                tensorboard.log_histogram('step3/dst_C1', predict3[1].flatten(), ibatch)
+                tensorboard.log_histogram('step3/dst_C2', predict3[2].flatten(), ibatch)
 
 if __name__ == '__main__':
     main()

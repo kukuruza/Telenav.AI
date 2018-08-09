@@ -23,7 +23,6 @@ import warnings
 
 import keras
 
-print (os.getenv('PYTHONPATH'))
 from keras_retinanet.utils.image import (
     TransformParameters,
     adjust_transform_for_image,

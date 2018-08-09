@@ -73,7 +73,6 @@ def incomplete_classification_model(
             bias_initializer='zeros',
             **options
         )(outputs)
-    print ('incomplete pyramid classification outputs', outputs)
 
     return keras.models.Model(inputs=inputs, outputs=outputs, name=name)
 
@@ -96,7 +95,7 @@ def clas_discriminator_model(
     outputs = inputs
     outputs = keras.layers.Conv2D(
         filters=num_classes * num_anchors,
-        # TODO: C1 and C2 are different, so had to replace zero init to normal init. Check what will differ.
+        # C1 and C2 are different, so had to replace zero init to normal init.
         #kernel_initializer=keras.initializers.zeros(),
         kernel_initializer=keras.initializers.normal(mean=0.0, stddev=0.01, seed=None), 
         bias_initializer=initializers.PriorProbability(probability=prior_probability),
@@ -336,11 +335,11 @@ def retinanet(
 
     # compute pyramid features as per https://arxiv.org/abs/1708.02002
     features = create_pyramid_features(C3, C4, C5)
-    print ('features', features)
+    logging.debug('features', features)
 
     # for all pyramid levels, run available submodels
     pyramids = __build_pyramid(submodels, features)
-    print ('Number of pyramids', len(pyramids))
+    logging.debug('Number of pyramids', len(pyramids))
     model_G = keras.models.Model(inputs=inputs, outputs=pyramids, name='G')
 
     # apply classifiers on top of the classification head of model_G.
