@@ -57,21 +57,18 @@ def create_models(backbone_retinanet, backbone, num_classes, weights, tensorboar
     if multi_gpu > 1:
         assert False
     else:
-        inference_model, model_G, model_C = backbone_retinanet(
+        model_inference, model_G, model_C1, model_C2 = backbone_retinanet(
             num_classes, backbone=backbone, nms=True, modifier=modifier, adapt=True)
         model_G = model_with_weights(model_G, weights=weights, skip_mismatch=True)
-        logging.debug(inference_model.summary())
 
     src_G_outputs = model_G(src_inputs)
-    src_C_outputs = model_C(src_G_outputs)
-    src_regr = Lambda(lambda x: x, name='src_regression')(src_C_outputs[0])
-    src_C1_clas = Lambda(lambda x: x, name='src_C1_classification')(src_C_outputs[1])
-    src_C2_clas = Lambda(lambda x: x, name='src_C2_classification')(src_C_outputs[2])
+    src_regr = Lambda(lambda x: x, name='src_regression')(src_G_outputs[0])
+    src_C1_clas = Lambda(lambda x: x, name='src_C1_classification')(model_C1(src_G_outputs[1:]))
+    src_C2_clas = Lambda(lambda x: x, name='src_C2_classification')(model_C2(src_G_outputs[1:]))
 
     dst_G_outputs = model_G(dst_inputs)
-    dst_C_outputs = model_C(dst_G_outputs)
-    dst_C1_clas = Lambda(lambda x: x, name='dst_C1_classification')(dst_C_outputs[1])
-    dst_C2_clas = Lambda(lambda x: x, name='dst_C2_classification')(dst_C_outputs[2])
+    dst_C1_clas = Lambda(lambda x: x, name='dst_C1_classification')(model_C1(dst_G_outputs[1:]))
+    dst_C2_clas = Lambda(lambda x: x, name='dst_C2_classification')(model_C2(dst_G_outputs[1:]))
 
     # Step 1.
     inputs = [src_inputs]
@@ -79,46 +76,44 @@ def create_models(backbone_retinanet, backbone, num_classes, weights, tensorboar
     model_step1 = keras.models.Model(inputs=inputs, outputs=outputs, name='adapt-step1')
     model_step1.compile(
         loss={
-            'src_regression'    : losses.smooth_l1(),
+            'src_regression'       : losses.smooth_l1(),
             'src_C1_classification': losses.focal(),
             'src_C2_classification': losses.focal(),
         },
         optimizer=keras.optimizers.adam(lr=1e-5, clipnorm=0.001)
     )
     logging.info('model_step1')
-    logging.info(model_step1.summary())
+    logging.info(model_step1.summary(line_length=240, positions=[.18, .80, .86, 1.]))
 
     # Step 2.
     # How to use make a part of the model non-trainable:
     #   https://gist.github.com/naotokui/a9274f12af9d946e99b6df73a5d2af6d
-    inputs = [src_inputs, dst_inputs]
-    #dst_neg_discr_clas = losses.FocalDiscrepancyClas(name='dst_neg_discr_clas', gamma=2, negative=True)([dst_C1_clas, dst_C2_clas])
-    dst_neg_discr_clas = losses.DiscrepancyClas(name='dst_neg_discr_clas', negative=True, alpha=1)([dst_C1_clas, dst_C2_clas])
-    print ('dst_neg_discr_clas', dst_neg_discr_clas.get_shape())
-    outputs = [src_regr, src_C1_clas, src_C2_clas, dst_neg_discr_clas]
     model_G.trainable = False
-    model_C.trainable = True
+    model_C1.trainable = True
+    model_C2.trainable = True
+    inputs = [src_inputs, dst_inputs]
+    dst_neg_discr_clas = losses.DiscrepancyClas(name='dst_neg_discr_clas', negative=True)([dst_C1_clas, dst_C2_clas])
+    outputs = [src_C1_clas, src_C2_clas, dst_neg_discr_clas]
     model_step2 = keras.models.Model(inputs=inputs, outputs=outputs, name='adapt-step2')
     model_step2.compile(
         loss={
-            'src_regression'    : losses.smooth_l1(),
             'src_C1_classification': losses.focal(),
             'src_C2_classification': losses.focal(),
             'dst_neg_discr_clas'   : losses.zero_loss,
         },
         optimizer=keras.optimizers.adam(lr=1e-5, clipnorm=0.001)
     )
-    #logging.info('model_step2')
-    #logging.info(model_step2.summary())
+    logging.info('model_step2')
+    logging.info(model_step2.summary(line_length=240, positions=[.18, .80, .86, 1.]))
 
     # Step 3.
-    inputs = [dst_inputs]
-    #dst_discr_clas = losses.FocalDiscrepancyClas(name='dst_discr_clas', gamma=2)([dst_C1_clas, dst_C2_clas])
-    dst_discr_clas = losses.DiscrepancyClas(name='dst_discr_clas', alpha=1)([dst_C1_clas, dst_C2_clas])
-    print ('dst_discr_clas', dst_discr_clas.get_shape())
-    outputs = [dst_discr_clas, dst_C1_clas, dst_C2_clas]
     model_G.trainable = True
-    model_C.trainable = False
+    model_G.get_layer('regression_submodel').trainable = False
+    model_C1.trainable = False
+    model_C2.trainable = False
+    inputs = [dst_inputs]
+    dst_discr_clas = losses.DiscrepancyClas(name='dst_discr_clas')([dst_C1_clas, dst_C2_clas])
+    outputs = [dst_discr_clas, dst_C1_clas, dst_C2_clas]
     model_step3 = keras.models.Model(inputs=inputs, outputs=outputs, name='adapt-step3')
     model_step3.compile(
         loss={
@@ -127,9 +122,9 @@ def create_models(backbone_retinanet, backbone, num_classes, weights, tensorboar
         optimizer=keras.optimizers.adam(lr=1e-5, clipnorm=0.001)
     )
     logging.info('model_step3')
-    logging.info(model_step3.summary())
+    logging.info(model_step3.summary(line_length=240, positions=[.18, .80, .86, 1.]))
 
-    return inference_model, model_step1, model_step2, model_step3
+    return model_step1, model_step2, model_step3
 
 
 def create_generators(args):
@@ -201,7 +196,7 @@ def check_args(parsed_args):
     return parsed_args
 
 
-def parse_args(args):
+def parse_args():
     parser     = argparse.ArgumentParser(description='Simple training script for training a RetinaNet network.')
     subparsers = parser.add_subparsers(help='Arguments for specific dataset types.', dest='dataset_type')
     subparsers.required = True
@@ -222,7 +217,6 @@ def parse_args(args):
 
     parser.add_argument('--backbone',        help='Backbone model used by retinanet.', default='resnet50', type=str)
     parser.add_argument('--batch-size',      help='Size of the batches.', default=1, type=int)
-    parser.add_argument('--gpu',             help='Id of the GPU to use (as reported by nvidia-smi).')
     parser.add_argument('--multi-gpu',       help='Number of GPUs to use for parallel processing.', type=int, default=1)
     parser.add_argument('--multi-gpu-force', help='Extra flag needed to enable (experimental) multi-gpu support.', action='store_true')
     parser.add_argument('--epochs',          help='Number of epochs to train.', type=int, default=50)
@@ -232,24 +226,18 @@ def parse_args(args):
     parser.add_argument('--no-snapshots',    help='Disable saving snapshots.', dest='snapshots', action='store_false')
     parser.add_argument('--freeze-backbone', help='Freeze training of backbone layers.', action='store_true')
 
-    return check_args(parser.parse_args(args))
+    return check_args(parser.parse_args())
 
 
-def main(args=None):
+def main():
     progressbar.streams.wrap_stderr()
     log_util.config(__file__)
     logger = logging.getLogger(__name__)
-    # parse arguments
-    if args is None:
-        args = sys.argv[1:]
-    args = parse_args(args)
+    args = parse_args()
 
     # make sure keras is the minimum required version
     check_keras_version()
 
-    # optionally choose specific GPU
-    if args.gpu:
-        os.environ['CUDA_VISIBLE_DEVICES'] = args.gpu
     keras.backend.tensorflow_backend.set_session(get_session())
 
     # create the generators
@@ -281,7 +269,7 @@ def main(args=None):
             weights = download_imagenet(args.backbone)
 
         logger.info('Creating model, this may take a second...')
-        model, model_step1, model_step2, model_step3 = create_models(
+        model_step1, model_step2, model_step3 = create_models(
             backbone_retinanet=retinanet,
             backbone=args.backbone,
             num_classes=train_generator.generator_src.num_classes(),
@@ -302,13 +290,12 @@ def main(args=None):
     logger.info('losses in steps \n\t1: %s \n\t2: %s \n\t3: %s' % 
         (losses_names1, losses_names2, losses_names3))
 
-    for layer in model_step1.get_layer('G').layers:
-        print ('G', layer.name)
+    zeros = np.zeros((args.batch_size,1,1))
 
     for epoch in range(args.epochs):
         for ibatch, (inputs, targets) in progressbar.ProgressBar()(enumerate(train_generator)):
 
-            for layer in model_step1.get_layer('C').layers:
+            for layer in model_step1.get_layer('C1').layers:
                 if hasattr(layer, 'layers'):
                     for layerin in layer.layers:
                         #print ('%s.%s' % (layer.name, layerin.name))
@@ -317,31 +304,21 @@ def main(args=None):
                             tensorboard.log_histogram('clas/%s/biases' % layerin.name, layerin.get_weights()[1], ibatch)
                         assert not hasattr(layerin, 'layers'), layerin.layers
 
-            zeros = np.zeros((args.batch_size,1,1))
-
             losses1 = model_step1.train_on_batch(
                 x=[inputs['src']],
                 y=[targets['src'][0], targets['src'][1], targets['src'][1]])
             logger.info('1: %s' % [str(x) for x in zip(losses_names1, losses1)])
             for loss_name, loss in zip(losses_names1, losses1):
                 tensorboard.log_scalar('step1/' + loss_name, loss, ibatch)
-            #logger.info('step1: G and C should change.')
-            #logger.info('step1: G=%s' % model_step1.get_layer('G').get_layer('conv1').get_weights()[0].flatten()[:10])
-            #logger.info('step1: C=%s' % model_step1.get_layer('C').get_layer(
-            #    'classification_submodel1').get_layer('pyramid_classification1_2').get_weights()[0].flatten()[:10])
 
             losses2 = model_step2.train_on_batch(
                 x=[inputs['src'], inputs['dst']],
-                y=[targets['src'][0], targets['src'][1], targets['src'][1], zeros])
+                y=[targets['src'][1], targets['src'][1], zeros])
             logger.info('2: %s' % [str(x) for x in zip(losses_names2, losses2)])
             for loss_name, loss in zip(losses_names2, losses2):
                 tensorboard.log_scalar('step2/' + loss_name, loss, ibatch)
             predict2 = model_step2.predict(x=[inputs['src'], inputs['dst']])
-            tensorboard.log_histogram('step2/dst_neg_discr', predict2[3].flatten(), ibatch)
-            #logger.info('step2: G should not change, but C should.')
-            #logger.info('step2: G=%s' % model_step1.get_layer('G').get_layer('conv1').get_weights()[0].flatten()[:10])
-            #logger.info('step2: C=%s' % model_step1.get_layer('C').get_layer(
-            #    'classification_submodel1').get_layer('pyramid_classification1_2').get_weights()[0].flatten()[:10])
+            tensorboard.log_histogram('step2/dst_neg_discr', predict2[2].flatten(), ibatch)
 
             losses3 = model_step3.train_on_batch(
                 x=[inputs['dst']],
@@ -353,10 +330,6 @@ def main(args=None):
             tensorboard.log_histogram('step3/dst_discr', predict3[0].flatten(), ibatch)
             tensorboard.log_histogram('step3/dst_C1', predict3[1].flatten(), ibatch)
             tensorboard.log_histogram('step3/dst_C2', predict3[2].flatten(), ibatch)
-            #logger.info('step3: G should change, C should not.')
-            #logger.info('step3: G=%s' % model_step1.get_layer('G').get_layer('conv1').get_weights()[0].flatten()[:10])
-            #logger.info('step3: C=%s' % model_step1.get_layer('C').get_layer(
-            #    'classification_submodel1').get_layer('pyramid_classification1_2').get_weights()[0].flatten()[:10])
 
 
 if __name__ == '__main__':

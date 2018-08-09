@@ -126,7 +126,7 @@ class DiscrepancyClas(Layer):
         return (1,)
 
 def zero_loss(y_true, y_pred):
-    return keras.backend.sum(y_pred) # keras.backend.zeros_like(y_pred)  # Need to fix shape.
+    return 10000 * keras.backend.mean(y_pred) # keras.backend.zeros_like(y_pred)  # Need to fix shape.
 
 def no_loss(y_true, y_pred):
     return keras.backend.zeros_like(y_pred)
