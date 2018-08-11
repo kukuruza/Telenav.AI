@@ -21,6 +21,8 @@ from collections import OrderedDict
 from keras.models import Model as Keras_Model
 from tensorflow import Session as Tensorflow_Session
 import tensorflow as tf
+from io import BytesIO
+import matplotlib.pyplot as plt
 
 import apollo_python_common.image
 from vanishing_point.vanishing_point import VanishingPointDetector
@@ -37,7 +39,10 @@ MAX_DETECTIONS=300
 
 
 class Logger(object):
-    """Logging in tensorboard without tensorflow ops."""
+    """
+    Logging in tensorboard without tensorflow ops.
+    https://gist.github.com/gyglim/1f8dfb1b5c82627ae3efcfbbadb9f514
+    """
 
     def __init__(self, log_dir):
         """Creates a summary writer logging to log_dir."""
@@ -63,7 +68,7 @@ class Logger(object):
         im_summaries = []
         for nr, img in enumerate(images):
             # Write the image to a string
-            s = StringIO()
+            s = BytesIO()
             plt.imsave(s, img, format='png')
 
             # Create an Image object

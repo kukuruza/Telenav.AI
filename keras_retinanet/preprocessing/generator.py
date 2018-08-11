@@ -163,6 +163,7 @@ class Generator(object):
         if self.group_method == 'random':
             random.shuffle(order)
         elif self.group_method == 'ratio':
+            assert False, 'It shouldnt do it with a single aspect ratio images.'
             order.sort(key=lambda x: self.image_aspect_ratio(x))
 
         # divide into groups, one group = one batch
@@ -216,6 +217,7 @@ class Generator(object):
         # load images and annotations
         image_group       = self.load_image_group(group)
         annotations_group = self.load_annotations_group(group)
+        labels_group      = annotations_group.copy()
 
         # check validity of annotations
         image_group, annotations_group = self.filter_annotations(image_group, annotations_group, group)
@@ -229,7 +231,7 @@ class Generator(object):
         # compute network targets
         targets = self.compute_targets(image_group, annotations_group)
 
-        return inputs, targets
+        return inputs, targets, labels_group
 
     def __next__(self):
         return self.next()

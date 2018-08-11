@@ -21,6 +21,7 @@ from ..utils.image import read_image_bgr
 import numpy as np
 from PIL import Image
 from six import raise_from
+import logging
 
 import csv
 import sys
@@ -71,10 +72,10 @@ def _read_annotations(csv_reader, classes):
         if (x1, y1, x2, y2, class_name) == ('', '', '', '', ''):
             continue
 
-        x1 = _parse(x1, int, 'line {}: malformed x1: {{}}'.format(line))
-        y1 = _parse(y1, int, 'line {}: malformed y1: {{}}'.format(line))
-        x2 = _parse(x2, int, 'line {}: malformed x2: {{}}'.format(line))
-        y2 = _parse(y2, int, 'line {}: malformed y2: {{}}'.format(line))
+        x1 = _parse(x1, float, 'line {}: malformed x1: {{}}'.format(line))
+        y1 = _parse(y1, float, 'line {}: malformed y1: {{}}'.format(line))
+        x2 = _parse(x2, float, 'line {}: malformed x2: {{}}'.format(line))
+        y2 = _parse(y2, float, 'line {}: malformed y2: {{}}'.format(line))
 
         # Check that the bounding box is valid.
         if x2 <= x1:
@@ -175,5 +176,5 @@ class CSVGenerator(Generator):
             boxes[idx, 2] = float(annot['x2'])
             boxes[idx, 3] = float(annot['y2'])
             boxes[idx, 4] = self.name_to_label(class_name)
-
+ 
         return boxes

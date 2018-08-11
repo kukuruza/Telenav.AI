@@ -335,11 +335,11 @@ def retinanet(
 
     # compute pyramid features as per https://arxiv.org/abs/1708.02002
     features = create_pyramid_features(C3, C4, C5)
-    logging.debug('features', features)
+    logging.debug('features: %s' % features)
 
     # for all pyramid levels, run available submodels
     pyramids = __build_pyramid(submodels, features)
-    logging.debug('Number of pyramids', len(pyramids))
+    logging.debug('Number of pyramids: %d' % len(pyramids))
     model_G = keras.models.Model(inputs=inputs, outputs=pyramids, name='G')
 
     # apply classifiers on top of the classification head of model_G.

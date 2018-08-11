@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 set -e
 WEIGHTS='imagenet'
-TRAIN_SRC_PATH='/media/storage2/etoropov/datasets/telenav_ai_dataset/train_data'
+#TRAIN_SRC_PATH='/media/storage2/etoropov/datasets/telenav_ai_dataset/train_data'
+ANNOTATIONS='/media/storage2/etoropov/datasets/bdd_data/annotation_list_train_v2.csv'
+CLASSES='/media/storage2/etoropov/datasets/bdd_data/class_list.csv'
 TRAIN_DST_PATH='/media/storage2/etoropov/datasets/scotty/4096x2160_5Hz__2018_6_15_10_10_38'
 
 echo 'Parameters:'
@@ -14,8 +16,10 @@ PYTHONPATH=$TELENAV_HOME:$TELENAV_HOME/apollo_python_common/protobuf/:$PYTHONPAT
 export PYTHONPATH
 export TF_CPP_MIN_LOG_LEVEL=3  # Remove annoying TF debugging info.
 
+#    traffic_signs $TRAIN_SRC_PATH 
 python3 -u $TELENAV_HOME/retinanet/train_adapt.py \
     --imagenet-weights \
     --steps 35000 --batch-size 1 \
     ${@:1} \
-    traffic_signs $TRAIN_SRC_PATH $TRAIN_DST_PATH
+    csv $ANNOTATIONS $CLASSES \
+    $TRAIN_DST_PATH

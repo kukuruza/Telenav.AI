@@ -28,9 +28,7 @@ from keras_retinanet.utils.keras_version import check_keras_version
 from keras_retinanet.utils.anchors import make_shapes_callback, anchor_targets_bbox
 from keras_retinanet.utils.model import freeze as freeze_model
 import apollo_python_common.io_utils as io_utils
-from retinanet.traffic_signs_generator import TrafficSignsGenerator
 from retinanet.traffic_signs_eval import TrafficSignsEval
-from retinanet.adapt_generator import ImageFolderGenerator, AdaptGenerator
 from utils import Logger as TFLogger
 
 def get_session():
@@ -129,25 +127,44 @@ def create_generators(args):
     # create random transform generator for augmenting training data
     transform_generator = random_transform_generator(min_rotation=-0.122173,
                                                      max_rotation=0.122173)
+
     if args.dataset_type == 'traffic_signs':
+        from retinanet.traffic_signs_generator import TrafficSignsGenerator
         train_src_generator = TrafficSignsGenerator(
             args.train_src_path,
             transform_generator=transform_generator,
             batch_size=args.batch_size,
             group_method='random',
-            image_min_side=1080,
-            image_max_side=2592
+            image_min_side=args.image_min_side,
+            image_max_side=args.image_max_side
         )
-        train_dst_generator = ImageFolderGenerator(
-            args.train_dst_path,
+    elif args.dataset_type == 'csv':
+        from keras_retinanet.preprocessing.csv_generator import CSVGenerator
+        train_src_generator = CSVGenerator(
+            args.annotations,
+            args.classes,
             transform_generator=transform_generator,
             batch_size=args.batch_size,
-            group_method='random',
-            image_min_side=1080,
-            image_max_side=2592
+            image_min_side=args.image_min_side,
+            image_max_side=args.image_max_side,
+            group_method='random'
+#            preprocess_image=preprocess_image,
         )
-        # Combine generators.
-        train_generator = AdaptGenerator(train_src_generator, train_dst_generator)
+
+    # Currently dst data is only in ImageFolder format. Maybe make options for the future.
+    from retinanet.adapt_generator import ImageFolderGenerator
+    train_dst_generator = ImageFolderGenerator(
+        args.train_dst_path,
+        transform_generator=transform_generator,
+        batch_size=args.batch_size,
+        group_method='random',
+        image_min_side=1080,
+        image_max_side=2592
+    )
+
+    # Combine generators.
+    from retinanet.adapt_generator import AdaptGenerator
+    train_generator = AdaptGenerator(train_src_generator, train_dst_generator)
 
     return train_generator
 
@@ -201,10 +218,13 @@ def parse_args():
 
     ts_parser = subparsers.add_parser('traffic_signs')
     ts_parser.add_argument('train_src_path', help='Path to folder containing files used for train. The rois.bin file should be there.')
-    ts_parser.add_argument('train_dst_path', help='Path to folder containing files used for train. The rois.bin file should be there.')
 
-    def csv_list(string):
-        return string.split(',')
+    csv_parser = subparsers.add_parser('csv')
+    csv_parser.add_argument('annotations', help='Path to CSV file containing annotations for training.')
+    csv_parser.add_argument('classes', help='Path to a CSV file containing class label mapping.')
+    csv_parser.add_argument('--val-annotations', help='Path to CSV file containing annotations for validation (optional).')
+
+    parser.add_argument('train_dst_path', help='Path to folder with dst domain images.')
 
     group = parser.add_mutually_exclusive_group()
     group.add_argument('--snapshot',          help='Resume training from a snapshot.')
@@ -222,8 +242,10 @@ def parse_args():
     parser.add_argument('--tensorboard-dir', help='Log directory for Tensorboard output', default='./logs')
     parser.add_argument('--no-snapshots',    help='Disable saving snapshots.', dest='snapshots', action='store_false')
     parser.add_argument('--freeze-backbone', help='Freeze training of backbone layers.', action='store_true')
-    parser.add_argument('--logging',         required=True, type=int, choices=[10, 20, 30, 40], help='Log debug (10), info (20), warning (30), error (40).')
+    parser.add_argument('--logging',         default=20, type=int, choices=[10, 20, 30, 40], help='Log debug (10), info (20), warning (30), error (40).')
     parser.add_argument('--debug_steps',     nargs='+', type=int, choices=[1, 2, 3], default=[1, 2, 3], help='Which out of the tree steps to run.')
+    parser.add_argument('--image-min-side', help='Rescale the image so the smallest side is min_side.', type=int, default=1080)
+    parser.add_argument('--image-max-side', help='Rescale the image if the largest side is larger than max_side.', type=int, default=2592)
 
     return check_args(parser.parse_args())
 
@@ -253,7 +275,6 @@ def main():
     else:
         raise NotImplementedError('Backbone \'{}\' not implemented.'.format(args.backbone))
 
-    # https://gist.github.com/gyglim/1f8dfb1b5c82627ae3efcfbbadb9f514
     tensorboard = TFLogger(args.tensorboard_dir)
 
     # create the model
@@ -287,7 +308,14 @@ def main():
     zeros = np.zeros((args.batch_size,1,1))
 
     for epoch in range(args.epochs):
-        for ibatch, (inputs, targets) in progressbar.ProgressBar()(enumerate(train_generator)):
+        for ibatch, (inputs, targets, labels) in progressbar.ProgressBar()(enumerate(train_generator)):
+
+#            logging.info (labels['src'])
+#            print(inputs['src'].shape, inputs['src'].min(), inputs['src'].max())
+#            print(inputs['dst'].shape, inputs['dst'].min(), inputs['dst'].max())
+            
+            tensorboard.log_images('inputs/src', np.clip(inputs['src'][:,:,:,::-1] + 128, 0, 255).astype(np.uint8), ibatch)
+            tensorboard.log_images('inputs/dst', np.clip(inputs['dst'][:,:,:,::-1] + 128, 0, 255).astype(np.uint8), ibatch)
 
             for layer in model_step1.get_layer('C1').layers:
                 if hasattr(layer, 'layers'):

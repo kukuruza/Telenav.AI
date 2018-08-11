@@ -197,14 +197,14 @@ class AdaptGenerator:
         self.logger.info('Dataset was initialised.')
 
     def __next__(self):
-        input_src, target_src = self.generator_src.__next__()
+        input_src, target_src, labels_src = self.generator_src.__next__()
         input_dst = self.generator_tgt.__next__()
         self.logger.debug('next input_src[0] shape: %s' % str(input_src[0].shape))
         self.logger.debug('next input_dst[0] shape: %s' % str(input_dst[0].shape))
         self.logger.debug('next target_src shape: %s' % str(len(target_src)))
         self.logger.debug('next target_src shape: %s' % str(np.asarray(target_src[0]).shape))
         self.logger.debug('next target_src shape: %s' % str(np.asarray(target_src[1]).shape))
-        return {'src': input_src, 'dst': input_dst}, {'src': target_src}
+        return {'src': input_src, 'dst': input_dst}, {'src': target_src}, {'src': labels_src}
         #return [input_src, input_dst], [target_src[0], target_src[0], target_src[1], target_src[1]]
 
     def __iter__(self):
