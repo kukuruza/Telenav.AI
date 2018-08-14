@@ -19,7 +19,7 @@ import warnings
 import keras
 import keras_resnet
 import keras_resnet.models
-import keras.applications.imagenet_utils
+from keras.utils import get_file
 from ..models import retinanet
 
 resnet_filename = 'ResNet-{}-model.keras.h5'
@@ -45,7 +45,7 @@ def download_imagenet(backbone):
     elif backbone == 152:
         checksum = '6ee11ef2b135592f8031058820bb9e71'
 
-    return keras.applications.imagenet_utils.get_file(
+    return get_file(
         filename,
         resource,
         cache_subdir='models',

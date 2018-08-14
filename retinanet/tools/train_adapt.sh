@@ -1,17 +1,16 @@
 #!/usr/bin/env bash
 set -e
 WEIGHTS='imagenet'
-#TRAIN_SRC_PATH='/media/storage2/etoropov/datasets/telenav_ai_dataset/train_data'
-ANNOTATIONS='/media/storage2/etoropov/datasets/bdd_data/annotation_list_train_v2.csv'
-CLASSES='/media/storage2/etoropov/datasets/bdd_data/class_list.csv'
-TRAIN_DST_PATH='/media/storage2/etoropov/datasets/scotty/4096x2160_5Hz__2018_6_15_10_10_38'
+ANNOTATIONS='/home/etoropov/datasets/BDD/annotation_list_train_v2.csv'
+CLASSES='/home/etoropov/datasets/BDD/class_list.csv'
+TRAIN_DST_PATH='/home/etoropov/datasets/scotty_2018_6_7'
 
 echo 'Parameters:'
 echo 'TRAIN_PATH:' $TRAIN_PATH
 echo 'VALIDATION_PATH:' $VALIDATION_PATH
 echo 'WEIGHTS:' $WEIGHTS
 echo '------------------------------------'
-TELENAV_HOME=/home/scotty/etoropov/Telenav.AI
+TELENAV_HOME=/home/etoropov/projects/Telenav.AI
 PYTHONPATH=$TELENAV_HOME:$TELENAV_HOME/apollo_python_common/protobuf/:$PYTHONPATH
 export PYTHONPATH
 export TF_CPP_MIN_LOG_LEVEL=3  # Remove annoying TF debugging info.

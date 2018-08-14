@@ -14,7 +14,6 @@ import time
 import itertools
 import traceback
 import math
-from tqdm import tqdm
 import threading
 import keras_retinanet.utils.image as retinanet_image
 from collections import OrderedDict
@@ -128,7 +127,7 @@ def predict_folder(model, input_folder, output_folder, resolutions, rois_labels,
     if max_number_of_images!=None:
         img_files_lst = img_files_lst[:max_number_of_images]
     all_predictions = dict()
-    for idx, file_name in enumerate(tqdm(img_files_lst)):
+    for idx, file_name in enumerate(img_files_lst):
         if log_level > 0:
             logger.info('{}/{} {}'.format(idx, len(img_files_lst), file_name))
         try:
