@@ -217,7 +217,6 @@ class Generator(object):
         # load images and annotations
         image_group       = self.load_image_group(group)
         annotations_group = self.load_annotations_group(group)
-        labels_group      = annotations_group.copy()
 
         # check validity of annotations
         image_group, annotations_group = self.filter_annotations(image_group, annotations_group, group)
@@ -231,7 +230,7 @@ class Generator(object):
         # compute network targets
         targets = self.compute_targets(image_group, annotations_group)
 
-        return inputs, targets, labels_group
+        return inputs, targets, annotations_group
 
     def __next__(self):
         return self.next()

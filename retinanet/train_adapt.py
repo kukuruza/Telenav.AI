@@ -27,6 +27,7 @@ from keras_retinanet.utils.transform import random_transform_generator
 from keras_retinanet.utils.keras_version import check_keras_version
 from keras_retinanet.utils.anchors import make_shapes_callback, anchor_targets_bbox
 from keras_retinanet.utils.model import freeze as freeze_model
+from keras_retinanet.utils.visualization import draw_annotations
 import apollo_python_common.io_utils as io_utils
 from retinanet.traffic_signs_eval import TrafficSignsEval
 from utils import Logger as TFLogger
@@ -243,9 +244,9 @@ def parse_args():
     parser.add_argument('--no-snapshots',    help='Disable saving snapshots.', dest='snapshots', action='store_false')
     parser.add_argument('--freeze-backbone', help='Freeze training of backbone layers.', action='store_true')
     parser.add_argument('--logging',         default=20, type=int, choices=[10, 20, 30, 40], help='Log debug (10), info (20), warning (30), error (40).')
-    parser.add_argument('--debug_steps',     nargs='+', type=int, choices=[1, 2, 3], default=[1, 2, 3], help='Which out of the tree steps to run.')
-    parser.add_argument('--image-min-side', help='Rescale the image so the smallest side is min_side.', type=int, default=1080)
-    parser.add_argument('--image-max-side', help='Rescale the image if the largest side is larger than max_side.', type=int, default=2592)
+    parser.add_argument('--steps',           nargs='+', type=int, choices=[1, 2, 3], default=[1, 2, 3], help='Debugging only: which out of the three steps to run.')
+    parser.add_argument('--image-min-side',  help='Rescale the image so the smallest side is min_side.', type=int, default=1080)
+    parser.add_argument('--image-max-side',  help='Rescale the image if the largest side is larger than max_side.', type=int, default=2592)
 
     return check_args(parser.parse_args())
 
@@ -310,12 +311,14 @@ def main():
     for epoch in range(args.epochs):
         for ibatch, (inputs, targets, labels) in progressbar.ProgressBar()(enumerate(train_generator)):
 
-#            logging.info (labels['src'])
-#            print(inputs['src'].shape, inputs['src'].min(), inputs['src'].max())
-#            print(inputs['dst'].shape, inputs['dst'].min(), inputs['dst'].max())
-            
-            tensorboard.log_images('inputs/src', np.clip(inputs['src'][:,:,:,::-1] + 128, 0, 255).astype(np.uint8), ibatch)
-            tensorboard.log_images('inputs/dst', np.clip(inputs['dst'][:,:,:,::-1] + 128, 0, 255).astype(np.uint8), ibatch)
+            # Draw annotations on the source image and display both the source and the target images.
+            src_images_with_boxes = []
+            for image, annotations in zip(inputs['src'], labels['src']):
+                src_image_with_boxes = ((image.copy() + 1) * 127.5).astype(np.uint8)[:,:,::-1].copy()
+                draw_annotations(src_image_with_boxes, annotations, (0,255,0), train_generator.generator_src)
+                src_images_with_boxes.append(src_image_with_boxes)
+            tensorboard.log_images('inputs/src', src_images_with_boxes, ibatch)
+            tensorboard.log_images('inputs/dst', (inputs['dst'][:,:,:,::-1] / 2.0 + 0.5), ibatch)
 
             for layer in model_step1.get_layer('C1').layers:
                 if hasattr(layer, 'layers'):
@@ -326,7 +329,7 @@ def main():
                             tensorboard.log_histogram('clas/%s/biases' % layerin.name, layerin.get_weights()[1], ibatch)
                         assert not hasattr(layerin, 'layers'), layerin.layers
 
-            if 1 in args.debug_steps:
+            if 1 in args.steps:
                 losses1 = model_step1.train_on_batch(
                     x=[inputs['src']],
                     y=[targets['src'][0], targets['src'][1], targets['src'][1]])
@@ -334,7 +337,7 @@ def main():
                 for loss_name, loss in zip(losses_names1, losses1):
                     tensorboard.log_scalar('step1/' + loss_name, loss, ibatch)
 
-            if 2 in args.debug_steps:
+            if 2 in args.steps:
                 losses2 = model_step2.train_on_batch(
                     x=[inputs['src'], inputs['dst']],
                     y=[targets['src'][1], targets['src'][1], zeros])
@@ -344,7 +347,7 @@ def main():
                 predict2 = model_step2.predict(x=[inputs['src'], inputs['dst']])
                 tensorboard.log_histogram('step2/dst_neg_discr', predict2[2].flatten(), ibatch)
 
-            if 3 in args.debug_steps:
+            if 3 in args.steps:
                 losses3 = model_step3.train_on_batch(
                     x=[inputs['dst']],
                     y=[zeros])

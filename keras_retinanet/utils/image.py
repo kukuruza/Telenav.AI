@@ -31,24 +31,7 @@ def read_image_bgr(path):
 
 
 def preprocess_image(x):
-    # mostly identical to "https://github.com/fchollet/keras/blob/master/keras/applications/imagenet_utils.py"
-    # except for converting RGB -> BGR since we assume BGR already
-    x = x.astype(keras.backend.floatx())
-    if keras.backend.image_data_format() == 'channels_first':
-        if x.ndim == 3:
-            x[0, :, :] -= 103.939
-            x[1, :, :] -= 116.779
-            x[2, :, :] -= 123.68
-        else:
-            x[:, 0, :, :] -= 103.939
-            x[:, 1, :, :] -= 116.779
-            x[:, 2, :, :] -= 123.68
-    else:
-        x[..., 0] -= 103.939
-        x[..., 1] -= 116.779
-        x[..., 2] -= 123.68
-
-    return x
+    return x / 127.5 - 1.
 
 
 def adjust_transform_for_image(transform, image, relative_translation):
