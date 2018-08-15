@@ -22,3 +22,4 @@ python3 -u $TELENAV_HOME/retinanet/train_adapt.py \
     ${@:1} \
     csv $ANNOTATIONS $CLASSES \
     $TRAIN_DST_PATH
+

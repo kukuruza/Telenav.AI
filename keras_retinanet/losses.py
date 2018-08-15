@@ -83,16 +83,17 @@ def smooth_l1(sigma=3.0):
 
 
 class FocalDiscrepancyClas(Layer):
-    def __init__(self, negative=False, gamma=2.0, **kwargs):
+    def __init__(self, negative=False, gamma=2.0, alpha=1.0, **kwargs):
         super(FocalDiscrepancyClas, self).__init__(**kwargs)
         self.negative = negative
         self.gamma = gamma
+        self.alpha = alpha
 
     def call(self, x, mask=None):
 
         # Compute the focal weight.
         xavg = (x[0] + x[1]) / 2.
-        focal_weight = (xavg * (1 - xavg)) ** (self.gamma / 2.)
+        focal_weight = self.alpha * (xavg * (1 - xavg)) ** (self.gamma / 2.)
 
         loss = keras.backend.abs(x[0] - x[1]) * focal_weight
         #self.add_loss(loss, x)
@@ -107,15 +108,34 @@ class FocalDiscrepancyClas(Layer):
 # A loss that would penalize a value not being equal to zero:
 #   https://github.com/keras-team/keras/issues/5563
 
+class PercentDiscrepancyClas(Layer):
+    def __init__(self, negative=False, alpha=1., **kwargs):
+        super(PercentDiscrepancyClas, self).__init__(**kwargs)
+        self.negative = negative
+        self.alpha = alpha
+
+    def call(self, x, mask=None):
+
+        eps = 0.01
+        loss = keras.backend.mean(keras.backend.abs(x[0] - x[1]) / (x[0] + x[1] + eps)) * self.alpha
+        #self.add_loss(loss, x)
+        if self.negative:
+            return -loss
+        else:
+            return loss
+
+    def get_output_shape(self, input_shape):
+        return (1,)
+
 class DiscrepancyClas(Layer):
-    def __init__(self, negative=False, alpha=1, **kwargs):
+    def __init__(self, negative=False, alpha=0.0001, **kwargs):
         super(DiscrepancyClas, self).__init__(**kwargs)
         self.negative = negative
         self.alpha = alpha
 
     def call(self, x, mask=None):
 
-        loss = keras.backend.abs(x[0] - x[1]) * self.alpha
+        loss = keras.backend.sum(keras.backend.abs(x[0] - x[1])) * self.alpha
         #self.add_loss(loss, x)
         if self.negative:
             return -loss
@@ -126,7 +146,7 @@ class DiscrepancyClas(Layer):
         return (1,)
 
 def zero_loss(y_true, y_pred):
-    return 10000 * keras.backend.mean(y_pred) # keras.backend.zeros_like(y_pred)  # Need to fix shape.
+    return y_pred # keras.backend.zeros_like(y_pred)  # Need to fix shape.
 
 def no_loss(y_true, y_pred):
     return keras.backend.zeros_like(y_pred)

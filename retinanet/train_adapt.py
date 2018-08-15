@@ -14,7 +14,6 @@ import warnings
 import logging
 import keras
 import keras.preprocessing.image
-from keras.utils import multi_gpu_model
 import tensorflow as tf
 import progressbar
 
@@ -44,19 +43,14 @@ def model_with_weights(model, weights, skip_mismatch):
     return model
 
 
-def create_models(backbone_retinanet, backbone, num_classes, weights, tensorboard, multi_gpu=0, freeze_backbone=False):
+def create_models(backbone_retinanet, backbone, num_classes, weights, tensorboard, freeze_backbone=False):
     modifier = freeze_model if freeze_backbone else None
 
-    # Keras recommends initialising a multi-gpu model on the CPU to ease weight sharing, and to prevent OOM errors.
-    # optionally wrap in a parallel model
     src_inputs = keras.layers.Input(shape=(None, None, 3), name='src_inputs')
     dst_inputs = keras.layers.Input(shape=(None, None, 3), name='dst_inputs')
-    if multi_gpu > 1:
-        assert False
-    else:
-        model_inference, model_G, model_C1, model_C2 = backbone_retinanet(
-            num_classes, backbone=backbone, nms=True, modifier=modifier, adapt=True)
-        model_G = model_with_weights(model_G, weights=weights, skip_mismatch=True)
+    model_inference, model_G, model_C1, model_C2 = backbone_retinanet(
+        num_classes, backbone=backbone, nms=True, modifier=modifier, adapt=True)
+    model_G = model_with_weights(model_G, weights=weights, skip_mismatch=True)
 
     src_G_outputs = model_G(src_inputs)
     src_regr = Lambda(lambda x: x, name='src_regression')(src_G_outputs[0])
@@ -79,8 +73,8 @@ def create_models(backbone_retinanet, backbone, num_classes, weights, tensorboar
         },
         optimizer=keras.optimizers.adam(lr=1e-5, clipnorm=0.001)
     )
-    logging.info('model_step1')
-    logging.info(model_step1.summary(line_length=240, positions=[.18, .80, .86, 1.]))
+    logging.debug('model_step1')
+    logging.debug(model_step1.summary(line_length=240, positions=[.18, .80, .86, 1.]))
 
     # Step 2.
     # How to use make a part of the model non-trainable:
@@ -89,7 +83,7 @@ def create_models(backbone_retinanet, backbone, num_classes, weights, tensorboar
     model_C1.trainable = True
     model_C2.trainable = True
     inputs = [src_inputs, dst_inputs]
-    dst_neg_discr_clas = losses.DiscrepancyClas(name='dst_neg_discr_clas', negative=True)([dst_C1_clas, dst_C2_clas])
+    dst_neg_discr_clas = losses.PercentDiscrepancyClas(name='dst_neg_discr_clas', negative=True)([dst_C1_clas, dst_C2_clas])
     outputs = [src_C1_clas, src_C2_clas, dst_neg_discr_clas]
     model_step2 = keras.models.Model(inputs=inputs, outputs=outputs, name='adapt-step2')
     model_step2.compile(
@@ -100,8 +94,8 @@ def create_models(backbone_retinanet, backbone, num_classes, weights, tensorboar
         },
         optimizer=keras.optimizers.adam(lr=1e-5, clipnorm=0.001)
     )
-    logging.info('model_step2')
-    logging.info(model_step2.summary(line_length=240, positions=[.18, .80, .86, 1.]))
+    logging.debug('model_step2')
+    logging.debug(model_step2.summary(line_length=240, positions=[.18, .80, .86, 1.]))
 
     # Step 3.
     model_G.trainable = True
@@ -110,7 +104,7 @@ def create_models(backbone_retinanet, backbone, num_classes, weights, tensorboar
     model_C2.trainable = False
     inputs = [dst_inputs]
     dst_discr_clas = losses.DiscrepancyClas(name='dst_discr_clas')([dst_C1_clas, dst_C2_clas])
-    outputs = [dst_discr_clas, dst_C1_clas, dst_C2_clas]
+    outputs = [dst_discr_clas]
     model_step3 = keras.models.Model(inputs=inputs, outputs=outputs, name='adapt-step3')
     model_step3.compile(
         loss={
@@ -118,10 +112,15 @@ def create_models(backbone_retinanet, backbone, num_classes, weights, tensorboar
         },
         optimizer=keras.optimizers.adam(lr=1e-5, clipnorm=0.001)
     )
-    logging.info('model_step3')
-    logging.info(model_step3.summary(line_length=240, positions=[.18, .80, .86, 1.]))
+    logging.debug('model_step3')
+    logging.debug(model_step3.summary(line_length=240, positions=[.18, .80, .86, 1.]))
 
-    return model_step1, model_step2, model_step3
+    # Dst predict.
+    inputs = [dst_inputs]
+    outputs = [dst_C1_clas, dst_C2_clas, dst_discr_clas]
+    model_dst_inference = keras.models.Model(inputs=inputs, outputs=outputs, name='dst-inference')
+    
+    return model_step1, model_step2, model_step3, model_dst_inference
 
 
 def create_generators(args):
@@ -180,18 +179,9 @@ def check_args(parsed_args):
     :return: parsed_args
     """
 
-    if parsed_args.multi_gpu > 1 and parsed_args.batch_size < parsed_args.multi_gpu:
-        raise ValueError(
-            "Batch size ({}) must be equal to or higher than the number of GPUs ({})".format(parsed_args.batch_size,
-                                                                                             parsed_args.multi_gpu))
-
-    if parsed_args.multi_gpu > 1 and parsed_args.snapshot:
-        raise ValueError(
-            "Multi GPU training ({}) and resuming from snapshots ({}) is not supported.".format(parsed_args.multi_gpu,
-                                                                                                parsed_args.snapshot))
-
-    if parsed_args.multi_gpu > 1 and not parsed_args.multi_gpu_force:
-        raise ValueError("Multi-GPU support is experimental, use at own risk! Run with --multi-gpu-force if you wish to continue.")
+    for step in parsed_args.model_steps:
+        assert step in [1, 2, 3], 'Bad model_step %d' % step
+    assert len(parsed_args.model_steps) >= 1, 'Model steps is empty.'
 
     if 'resnet' not in parsed_args.backbone:
         warnings.warn('Using experimental backbone {}. Only resnet50 has been properly tested.'.format(parsed_args.backbone))
@@ -234,21 +224,30 @@ def parse_args():
     group.add_argument('--no-weights',        help='Don\'t initialize the model with any weights.', dest='imagenet_weights', action='store_const', const=False)
 
     parser.add_argument('--backbone',        help='Backbone model used by retinanet.', default='resnet50', type=str)
-    parser.add_argument('--batch-size',      help='Size of the batches.', default=1, type=int)
-    parser.add_argument('--multi-gpu',       help='Number of GPUs to use for parallel processing.', type=int, default=1)
-    parser.add_argument('--multi-gpu-force', help='Extra flag needed to enable (experimental) multi-gpu support.', action='store_true')
-    parser.add_argument('--epochs',          help='Number of epochs to train.', type=int, default=50)
-    parser.add_argument('--steps',           help='Number of steps per epoch.', type=int, default=10000)
-    parser.add_argument('--snapshot-path',   help='Path to store snapshots of models during training (defaults to \'./snapshots\')', default='./snapshots')
-    parser.add_argument('--tensorboard-dir', help='Log directory for Tensorboard output', default='./logs')
-    parser.add_argument('--no-snapshots',    help='Disable saving snapshots.', dest='snapshots', action='store_false')
     parser.add_argument('--freeze-backbone', help='Freeze training of backbone layers.', action='store_true')
-    parser.add_argument('--logging',         default=20, type=int, choices=[10, 20, 30, 40], help='Log debug (10), info (20), warning (30), error (40).')
-    parser.add_argument('--steps',           nargs='+', type=int, choices=[1, 2, 3], default=[1, 2, 3], help='Debugging only: which out of the three steps to run.')
+    parser.add_argument('--batch-size',      help='Size of the batches.', default=1, type=int)
     parser.add_argument('--image-min-side',  help='Rescale the image so the smallest side is min_side.', type=int, default=1080)
     parser.add_argument('--image-max-side',  help='Rescale the image if the largest side is larger than max_side.', type=int, default=2592)
+    parser.add_argument('--epochs',          help='Number of epochs to train.', type=int, default=50)
+    parser.add_argument('--steps_per_epoch', help='Number of steps per epoch.', type=int, default=10000)
+    parser.add_argument('--snapshot-path',   help='Path to store snapshots of models during training (defaults to \'./snapshots\')', default='./snapshots')
+    parser.add_argument('--tensorboard-dir', help='Log directory for Tensorboard output', default='./logs')
+    parser.add_argument('--tensorboard-freq', type=int, default=10, help='how often to log changes to tensorboard.')
+    parser.add_argument('--logging',         default=20, type=int, choices=[10, 20, 30, 40], help='Log debug (10), info (20), warning (30), error (40).')
+    parser.add_argument('--model_steps',     type=lambda s: [int(item) for item in s.split(',')], default='1,2,3', help='Debugging only: which out of the three steps to run.')
 
     return check_args(parser.parse_args())
+
+
+def log_head_weights_distrib(tensorboard, model_step1, head_name, ibatch):
+    for layer in model_step1.get_layer(head_name).layers:
+        if hasattr(layer, 'layers'):
+            for layerin in layer.layers:
+                #print ('%s.%s' % (layer.name, layerin.name))
+                if layerin.get_weights():
+                    tensorboard.log_histogram('%s/%s/weights' % (head_name, layerin.name), layerin.get_weights()[0], ibatch)
+                    tensorboard.log_histogram('%s/%s/biases' % (head_name, layerin.name), layerin.get_weights()[1], ibatch)
+                assert not hasattr(layerin, 'layers'), layerin.layers
 
 
 def main():
@@ -290,74 +289,65 @@ def main():
             weights = download_imagenet(args.backbone)
 
         logger.info('Creating model, this may take a second...')
-        model_step1, model_step2, model_step3 = create_models(
+        model_step1, model_step2, model_step3, model_dst_inference = create_models(
             backbone_retinanet=retinanet,
             backbone=args.backbone,
             num_classes=train_generator.generator_src.num_classes(),
             weights=weights,
-            multi_gpu=args.multi_gpu,
             freeze_backbone=args.freeze_backbone,
             tensorboard=tensorboard,
         )
 
-    losses_names1 = model_step1.metrics_names
-    losses_names2 = model_step2.metrics_names
-    losses_names3 = model_step3.metrics_names
-    logger.info('losses in steps \n\t1: %s \n\t2: %s \n\t3: %s' % 
-        (losses_names1, losses_names2, losses_names3))
-
-    zeros = np.zeros((args.batch_size,1,1))
-
     for epoch in range(args.epochs):
         for ibatch, (inputs, targets, labels) in progressbar.ProgressBar()(enumerate(train_generator)):
+            if ibatch * args.batch_size > args.steps_per_epoch:
+                break
 
-            # Draw annotations on the source image and display both the source and the target images.
-            src_images_with_boxes = []
-            for image, annotations in zip(inputs['src'], labels['src']):
-                src_image_with_boxes = ((image.copy() + 1) * 127.5).astype(np.uint8)[:,:,::-1].copy()
-                draw_annotations(src_image_with_boxes, annotations, (0,255,0), train_generator.generator_src)
-                src_images_with_boxes.append(src_image_with_boxes)
-            tensorboard.log_images('inputs/src', src_images_with_boxes, ibatch)
-            tensorboard.log_images('inputs/dst', (inputs['dst'][:,:,:,::-1] / 2.0 + 0.5), ibatch)
+            if ibatch % (args.tensorboard_freq * 10) == 0:  # Log images 10 less often than everything else.
+                # Draw annotations on the source image and display both the source and the target images.
+                src_images_with_boxes = []
+                for image, annotations in zip(inputs['src'], labels['src']):
+                    src_image_with_boxes = ((image.copy() + 1) * 127.5).astype(np.uint8)[:,:,::-1].copy()
+                    draw_annotations(src_image_with_boxes, annotations, (0,255,0), train_generator.generator_src)
+                    src_images_with_boxes.append(src_image_with_boxes)
+                tensorboard.log_images('inputs/src', src_images_with_boxes, ibatch)
+                tensorboard.log_images('inputs/dst', (inputs['dst'][:,:,:,::-1] / 2.0 + 0.5), ibatch)
 
-            for layer in model_step1.get_layer('C1').layers:
-                if hasattr(layer, 'layers'):
-                    for layerin in layer.layers:
-                        #print ('%s.%s' % (layer.name, layerin.name))
-                        if layerin.get_weights():
-                            tensorboard.log_histogram('clas/%s/weights' % layerin.name, layerin.get_weights()[0], ibatch)
-                            tensorboard.log_histogram('clas/%s/biases' % layerin.name, layerin.get_weights()[1], ibatch)
-                        assert not hasattr(layerin, 'layers'), layerin.layers
+            # Distributions of all weights in heads C1 and in C2.
+            if ibatch % args.tensorboard_freq == 0:
+                log_head_weights_distrib(tensorboard, model_step1, 'C1', ibatch)
+                log_head_weights_distrib(tensorboard, model_step1, 'C2', ibatch)
 
-            if 1 in args.steps:
+                predict_dst = model_dst_inference.predict(x=[inputs['dst']])
+                tensorboard.log_histogram('predict/dst_C1', predict_dst[0].flatten(), ibatch)
+                tensorboard.log_histogram('predict/dst_C2', predict_dst[1].flatten(), ibatch)
+                tensorboard.log_histogram('predict/dst_discr', predict_dst[2].flatten(), ibatch)
+
+            if 1 in args.model_steps:
                 losses1 = model_step1.train_on_batch(
                     x=[inputs['src']],
                     y=[targets['src'][0], targets['src'][1], targets['src'][1]])
-                logger.debug('1: %s' % [str(x) for x in zip(losses_names1, losses1)])
-                for loss_name, loss in zip(losses_names1, losses1):
-                    tensorboard.log_scalar('step1/' + loss_name, loss, ibatch)
+                logger.debug('1: %s' % [str(x) for x in zip(model_step1.metrics_names, losses1)])
+                if ibatch % args.tensorboard_freq == 0:
+                    for loss_name, loss in zip(model_step1.metrics_names, losses1):
+                        tensorboard.log_scalar('step1/' + loss_name, loss, ibatch)
 
-            if 2 in args.steps:
+            if 2 in args.model_steps:
                 losses2 = model_step2.train_on_batch(
                     x=[inputs['src'], inputs['dst']],
-                    y=[targets['src'][1], targets['src'][1], zeros])
-                logger.debug('2: %s' % [str(x) for x in zip(losses_names2, losses2)])
-                for loss_name, loss in zip(losses_names2, losses2):
-                    tensorboard.log_scalar('step2/' + loss_name, loss, ibatch)
-                predict2 = model_step2.predict(x=[inputs['src'], inputs['dst']])
-                tensorboard.log_histogram('step2/dst_neg_discr', predict2[2].flatten(), ibatch)
+                    y=[targets['src'][1], targets['src'][1], np.zeros((args.batch_size,1,1))])
+                logger.debug('2: %s' % [str(x) for x in zip(model_step2.metrics_names, losses2)])
+                if ibatch % args.tensorboard_freq == 0:
+                    for loss_name, loss in zip(model_step2.metrics_names, losses2):
+                        tensorboard.log_scalar('step2/' + loss_name, loss, ibatch)
 
-            if 3 in args.steps:
-                losses3 = model_step3.train_on_batch(
+            if 3 in args.model_steps:
+                loss3 = model_step3.train_on_batch(
                     x=[inputs['dst']],
-                    y=[zeros])
-                logger.debug('3: %s' % str((losses_names3, losses3)))
-                for loss_name, loss in zip(losses_names3, losses3):
-                    tensorboard.log_scalar('step3/' + loss_name, loss, ibatch)
-                predict3 = model_step3.predict(x=[inputs['dst']])
-                tensorboard.log_histogram('step3/dst_discr', predict3[0].flatten(), ibatch)
-                tensorboard.log_histogram('step3/dst_C1', predict3[1].flatten(), ibatch)
-                tensorboard.log_histogram('step3/dst_C2', predict3[2].flatten(), ibatch)
+                    y=[np.zeros((args.batch_size,1,1))])
+                logger.debug('3: %s' % str((model_step3.metrics_names, loss3)))
+                if ibatch % args.tensorboard_freq == 0:
+                    tensorboard.log_scalar('step3/' + model_step3.metrics_names[0], loss3, ibatch)
 
 if __name__ == '__main__':
     main()
