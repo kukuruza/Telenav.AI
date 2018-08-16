@@ -99,7 +99,7 @@ def clas_discriminator_model(
         #kernel_initializer=keras.initializers.zeros(),
         kernel_initializer=keras.initializers.normal(mean=0.0, stddev=0.01, seed=None), 
         bias_initializer=initializers.PriorProbability(probability=prior_probability),
-        name='pyramid_classification',
+        name='conv1',
         **options
     )(outputs)
 

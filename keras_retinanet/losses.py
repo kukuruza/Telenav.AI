@@ -83,9 +83,8 @@ def smooth_l1(sigma=3.0):
 
 
 class FocalDiscrepancyClas(Layer):
-    def __init__(self, negative=False, gamma=2.0, alpha=1.0, **kwargs):
+    def __init__(self, gamma=2.0, alpha=1.0, **kwargs):
         super(FocalDiscrepancyClas, self).__init__(**kwargs)
-        self.negative = negative
         self.gamma = gamma
         self.alpha = alpha
 
@@ -97,10 +96,7 @@ class FocalDiscrepancyClas(Layer):
 
         loss = keras.backend.abs(x[0] - x[1]) * focal_weight
         #self.add_loss(loss, x)
-        if self.negative:
-            return -loss
-        else:
-            return loss
+        return loss
 
     def get_output_shape(self, input_shape):
         return (1,)
@@ -109,9 +105,8 @@ class FocalDiscrepancyClas(Layer):
 #   https://github.com/keras-team/keras/issues/5563
 
 class PercentDiscrepancyClas(Layer):
-    def __init__(self, negative=False, alpha=1., **kwargs):
+    def __init__(self, alpha=1., **kwargs):
         super(PercentDiscrepancyClas, self).__init__(**kwargs)
-        self.negative = negative
         self.alpha = alpha
 
     def call(self, x, mask=None):
@@ -119,28 +114,21 @@ class PercentDiscrepancyClas(Layer):
         eps = 0.01
         loss = keras.backend.mean(keras.backend.abs(x[0] - x[1]) / (x[0] + x[1] + eps)) * self.alpha
         #self.add_loss(loss, x)
-        if self.negative:
-            return -loss
-        else:
-            return loss
+        return loss
 
     def get_output_shape(self, input_shape):
         return (1,)
 
 class DiscrepancyClas(Layer):
-    def __init__(self, negative=False, alpha=0.0001, **kwargs):
+    def __init__(self, alpha=0.0001, **kwargs):
         super(DiscrepancyClas, self).__init__(**kwargs)
-        self.negative = negative
         self.alpha = alpha
 
     def call(self, x, mask=None):
 
         loss = keras.backend.sum(keras.backend.abs(x[0] - x[1])) * self.alpha
         #self.add_loss(loss, x)
-        if self.negative:
-            return -loss
-        else:
-            return loss
+        return loss
 
     def get_output_shape(self, input_shape):
         return (1,)

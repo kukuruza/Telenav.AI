@@ -51,6 +51,10 @@ def create_models(backbone_retinanet, backbone, num_classes, weights, tensorboar
     model_inference, model_G, model_C1, model_C2 = backbone_retinanet(
         num_classes, backbone=backbone, nms=True, modifier=modifier, adapt=True)
     model_G = model_with_weights(model_G, weights=weights, skip_mismatch=True)
+    logging.debug('model_C1')
+    logging.debug(model_C1.summary(print_fn=logging.debug))
+    logging.debug('model_C2')
+    logging.debug(model_C2.summary(print_fn=logging.debug))
 
     src_G_outputs = model_G(src_inputs)
     src_regr = Lambda(lambda x: x, name='src_regression')(src_G_outputs[0])
@@ -58,8 +62,12 @@ def create_models(backbone_retinanet, backbone, num_classes, weights, tensorboar
     src_C2_clas = Lambda(lambda x: x, name='src_C2_classification')(model_C2(src_G_outputs[1:]))
 
     dst_G_outputs = model_G(dst_inputs)
+    dst_regr = Lambda(lambda x: x, name='dst_regression')(dst_G_outputs[0])
     dst_C1_clas = Lambda(lambda x: x, name='dst_C1_classification')(model_C1(dst_G_outputs[1:]))
     dst_C2_clas = Lambda(lambda x: x, name='dst_C2_classification')(model_C2(dst_G_outputs[1:]))
+
+    dst_discr_clas = losses.DiscrepancyClas(name='dst_discr_clas')([dst_C1_clas, dst_C2_clas])
+    dst_neg_discr_clas = Lambda(lambda x: -x, name='dst_neg_discr_clas')(dst_discr_clas)
 
     # Step 1.
     inputs = [src_inputs]
@@ -74,7 +82,7 @@ def create_models(backbone_retinanet, backbone, num_classes, weights, tensorboar
         optimizer=keras.optimizers.adam(lr=1e-5, clipnorm=0.001)
     )
     logging.debug('model_step1')
-    logging.debug(model_step1.summary(line_length=240, positions=[.18, .80, .86, 1.]))
+    logging.debug(model_step1.summary(print_fn=logging.debug))
 
     # Step 2.
     # How to use make a part of the model non-trainable:
@@ -83,11 +91,11 @@ def create_models(backbone_retinanet, backbone, num_classes, weights, tensorboar
     model_C1.trainable = True
     model_C2.trainable = True
     inputs = [src_inputs, dst_inputs]
-    dst_neg_discr_clas = losses.PercentDiscrepancyClas(name='dst_neg_discr_clas', negative=True)([dst_C1_clas, dst_C2_clas])
-    outputs = [src_C1_clas, src_C2_clas, dst_neg_discr_clas]
+    outputs = [src_regr, src_C1_clas, src_C2_clas, dst_neg_discr_clas]
     model_step2 = keras.models.Model(inputs=inputs, outputs=outputs, name='adapt-step2')
     model_step2.compile(
         loss={
+            'src_regression'       : losses.smooth_l1(),
             'src_C1_classification': losses.focal(),
             'src_C2_classification': losses.focal(),
             'dst_neg_discr_clas'   : losses.zero_loss,
@@ -95,32 +103,34 @@ def create_models(backbone_retinanet, backbone, num_classes, weights, tensorboar
         optimizer=keras.optimizers.adam(lr=1e-5, clipnorm=0.001)
     )
     logging.debug('model_step2')
-    logging.debug(model_step2.summary(line_length=240, positions=[.18, .80, .86, 1.]))
+    logging.debug(model_step2.summary(print_fn=logging.debug))
 
     # Step 3.
     model_G.trainable = True
     model_G.get_layer('regression_submodel').trainable = False
     model_C1.trainable = False
     model_C2.trainable = False
-    inputs = [dst_inputs]
-    dst_discr_clas = losses.DiscrepancyClas(name='dst_discr_clas')([dst_C1_clas, dst_C2_clas])
-    outputs = [dst_discr_clas]
+    inputs = [src_inputs, dst_inputs]
+    outputs = [src_regr, src_C1_clas, src_C2_clas, dst_discr_clas]
     model_step3 = keras.models.Model(inputs=inputs, outputs=outputs, name='adapt-step3')
     model_step3.compile(
         loss={
+            'src_regression'       : losses.smooth_l1(),
+            'src_C1_classification': losses.focal(),
+            'src_C2_classification': losses.focal(),
             'dst_discr_clas'       : losses.zero_loss,
         },
         optimizer=keras.optimizers.adam(lr=1e-5, clipnorm=0.001)
     )
     logging.debug('model_step3')
-    logging.debug(model_step3.summary(line_length=240, positions=[.18, .80, .86, 1.]))
+    logging.debug(model_step3.summary(print_fn=logging.debug))
 
-    # Dst predict.
+    # Predict.
     inputs = [dst_inputs]
-    outputs = [dst_C1_clas, dst_C2_clas, dst_discr_clas]
-    model_dst_inference = keras.models.Model(inputs=inputs, outputs=outputs, name='dst-inference')
+    outputs = [dst_regr, dst_C1_clas, dst_C2_clas, dst_discr_clas]
+    model_inference = keras.models.Model(inputs=inputs, outputs=outputs, name='inference')
     
-    return model_step1, model_step2, model_step3, model_dst_inference
+    return model_step1, model_step2, model_step3, model_inference
 
 
 def create_generators(args):
@@ -179,6 +189,11 @@ def check_args(parsed_args):
     :return: parsed_args
     """
 
+    if parsed_args.snapshot_dir and not os.path.exists(parsed_args.snapshot_dir):
+        os.makedirs(parsed_args.snapshot_dir)
+    elif parsed_args.snapshot_dir is None:
+        logging.warning('Snapshots will not be made during training.')
+
     for step in parsed_args.model_steps:
         assert step in [1, 2, 3], 'Bad model_step %d' % step
     assert len(parsed_args.model_steps) >= 1, 'Model steps is empty.'
@@ -217,24 +232,20 @@ def parse_args():
 
     parser.add_argument('train_dst_path', help='Path to folder with dst domain images.')
 
-    group = parser.add_mutually_exclusive_group()
-    group.add_argument('--snapshot',          help='Resume training from a snapshot.')
-    group.add_argument('--imagenet-weights',  help='Initialize the model with pretrained imagenet weights. This is the default behaviour.', action='store_const', const=True, default=True)
-    group.add_argument('--weights',           help='Initialize the model with weights from a file.')
-    group.add_argument('--no-weights',        help='Don\'t initialize the model with any weights.', dest='imagenet_weights', action='store_const', const=False)
-
+    parser.add_argument('--load-snapshot',   help='Resume training from a snapshot. If not specified, will use ImageNet weights.')
     parser.add_argument('--backbone',        help='Backbone model used by retinanet.', default='resnet50', type=str)
     parser.add_argument('--freeze-backbone', help='Freeze training of backbone layers.', action='store_true')
     parser.add_argument('--batch-size',      help='Size of the batches.', default=1, type=int)
     parser.add_argument('--image-min-side',  help='Rescale the image so the smallest side is min_side.', type=int, default=1080)
     parser.add_argument('--image-max-side',  help='Rescale the image if the largest side is larger than max_side.', type=int, default=2592)
     parser.add_argument('--epochs',          help='Number of epochs to train.', type=int, default=50)
-    parser.add_argument('--steps_per_epoch', help='Number of steps per epoch.', type=int, default=10000)
-    parser.add_argument('--snapshot-path',   help='Path to store snapshots of models during training (defaults to \'./snapshots\')', default='./snapshots')
-    parser.add_argument('--tensorboard-dir', help='Log directory for Tensorboard output', default='./logs')
+    parser.add_argument('--batches-per-epoch', help='Number of steps per epoch.', type=int, default=10000)
+    parser.add_argument('--snapshot-dir',    help='Dir to store snapshots of models, specify "" for no snapshpts.', default='./snapshots')
+    parser.add_argument('--tensorboard-dir', help='Log directory for Tensorboard output, if not specified, no logging.')
     parser.add_argument('--tensorboard-freq', type=int, default=10, help='how often to log changes to tensorboard.')
+    parser.add_argument('--tensorboard-offset', help='The offset for reporting in tensorboard.', type=int, default=0)
     parser.add_argument('--logging',         default=20, type=int, choices=[10, 20, 30, 40], help='Log debug (10), info (20), warning (30), error (40).')
-    parser.add_argument('--model_steps',     type=lambda s: [int(item) for item in s.split(',')], default='1,2,3', help='Debugging only: which out of the three steps to run.')
+    parser.add_argument('--model-steps',     type=lambda s: [int(item) for item in s.split(',')], default='1,2,3', help='Debugging only: which out of the three steps to run.')
 
     return check_args(parser.parse_args())
 
@@ -247,6 +258,8 @@ def log_head_weights_distrib(tensorboard, model_step1, head_name, ibatch):
                 if layerin.get_weights():
                     tensorboard.log_histogram('%s/%s/weights' % (head_name, layerin.name), layerin.get_weights()[0], ibatch)
                     tensorboard.log_histogram('%s/%s/biases' % (head_name, layerin.name), layerin.get_weights()[1], ibatch)
+#                    print('%s/%s/%s: weights 0: %s' % (head_name, layer.name, layerin.name, layerin.get_weights()[0].flatten()[0]))
+#                    print('%s/%s/%s: bias 0: %s' % (head_name, layer.name, layerin.name, layerin.get_weights()[1].flatten()[0]))
                 assert not hasattr(layerin, 'layers'), layerin.layers
 
 
@@ -277,31 +290,25 @@ def main():
 
     tensorboard = TFLogger(args.tensorboard_dir)
 
-    # create the model
-    if args.snapshot is not None:
+    # Create the model.
+    logger.info('Creating model, this may take a second...')
+    model_step1, model_step2, model_step3, model_inference = create_models(
+        backbone_retinanet=retinanet,
+        backbone=args.backbone,
+        num_classes=train_generator.generator_src.num_classes(),
+        weights=(download_imagenet(args.backbone) if not args.load_snapshot else None),
+        freeze_backbone=args.freeze_backbone,
+        tensorboard=tensorboard,
+    )
+    if args.load_snapshot:
         logger.info('Loading model, this may take a second...')
-        model            = keras.models.load_model(args.snapshot, custom_objects=custom_objects)
-        prediction_model = model
-    else:
-        weights = args.weights
-        # default to imagenet if nothing else is specified
-        if weights is None and args.imagenet_weights:
-            weights = download_imagenet(args.backbone)
-
-        logger.info('Creating model, this may take a second...')
-        model_step1, model_step2, model_step3, model_dst_inference = create_models(
-            backbone_retinanet=retinanet,
-            backbone=args.backbone,
-            num_classes=train_generator.generator_src.num_classes(),
-            weights=weights,
-            freeze_backbone=args.freeze_backbone,
-            tensorboard=tensorboard,
-        )
+        model_inference.load_weights(args.load_snapshot, by_name=True)
 
     for epoch in range(args.epochs):
         for ibatch, (inputs, targets, labels) in progressbar.ProgressBar()(enumerate(train_generator)):
-            if ibatch * args.batch_size > args.steps_per_epoch:
+            if ibatch * args.batch_size > args.batches_per_epoch:
                 break
+            iglobal = epoch * args.batches_per_epoch + ibatch + args.tensorboard_offset
 
             if ibatch % (args.tensorboard_freq * 10) == 0:  # Log images 10 less often than everything else.
                 # Draw annotations on the source image and display both the source and the target images.
@@ -310,44 +317,49 @@ def main():
                     src_image_with_boxes = ((image.copy() + 1) * 127.5).astype(np.uint8)[:,:,::-1].copy()
                     draw_annotations(src_image_with_boxes, annotations, (0,255,0), train_generator.generator_src)
                     src_images_with_boxes.append(src_image_with_boxes)
-                tensorboard.log_images('inputs/src', src_images_with_boxes, ibatch)
-                tensorboard.log_images('inputs/dst', (inputs['dst'][:,:,:,::-1] / 2.0 + 0.5), ibatch)
+                tensorboard.log_images('inputs/src', src_images_with_boxes, iglobal)
+                tensorboard.log_images('inputs/dst', (inputs['dst'][:,:,:,::-1] / 2.0 + 0.5), iglobal)
 
             # Distributions of all weights in heads C1 and in C2.
             if ibatch % args.tensorboard_freq == 0:
-                log_head_weights_distrib(tensorboard, model_step1, 'C1', ibatch)
-                log_head_weights_distrib(tensorboard, model_step1, 'C2', ibatch)
+                log_head_weights_distrib(tensorboard, model_step1, 'C1', iglobal)
+                log_head_weights_distrib(tensorboard, model_step1, 'C2', iglobal)
 
-                predict_dst = model_dst_inference.predict(x=[inputs['dst']])
-                tensorboard.log_histogram('predict/dst_C1', predict_dst[0].flatten(), ibatch)
-                tensorboard.log_histogram('predict/dst_C2', predict_dst[1].flatten(), ibatch)
-                tensorboard.log_histogram('predict/dst_discr', predict_dst[2].flatten(), ibatch)
+                predict = model_inference.predict(x=[inputs['src']])
+                tensorboard.log_histogram('predict/src_C1', predict[1].flatten(), iglobal)
+                tensorboard.log_histogram('predict/src_C2', predict[2].flatten(), iglobal)
+                tensorboard.log_histogram('predict/src_discr', predict[3].flatten(), iglobal)
+                predict = model_inference.predict(x=[inputs['dst']])
+                tensorboard.log_histogram('predict/dst_C1', predict[1].flatten(), iglobal)
+                tensorboard.log_histogram('predict/dst_C2', predict[2].flatten(), iglobal)
+                tensorboard.log_histogram('predict/dst_discr', predict[3].flatten(), iglobal)
 
             if 1 in args.model_steps:
                 losses1 = model_step1.train_on_batch(
                     x=[inputs['src']],
                     y=[targets['src'][0], targets['src'][1], targets['src'][1]])
-                logger.debug('1: %s' % [str(x) for x in zip(model_step1.metrics_names, losses1)])
                 if ibatch % args.tensorboard_freq == 0:
                     for loss_name, loss in zip(model_step1.metrics_names, losses1):
-                        tensorboard.log_scalar('step1/' + loss_name, loss, ibatch)
+                        tensorboard.log_scalar('step1/' + loss_name, loss, iglobal)
 
             if 2 in args.model_steps:
                 losses2 = model_step2.train_on_batch(
                     x=[inputs['src'], inputs['dst']],
-                    y=[targets['src'][1], targets['src'][1], np.zeros((args.batch_size,1,1))])
-                logger.debug('2: %s' % [str(x) for x in zip(model_step2.metrics_names, losses2)])
+                    y=[targets['src'][0], targets['src'][1], targets['src'][1], np.zeros((1,))])
                 if ibatch % args.tensorboard_freq == 0:
                     for loss_name, loss in zip(model_step2.metrics_names, losses2):
-                        tensorboard.log_scalar('step2/' + loss_name, loss, ibatch)
+                        tensorboard.log_scalar('step2/' + loss_name, loss, iglobal)
 
             if 3 in args.model_steps:
-                loss3 = model_step3.train_on_batch(
-                    x=[inputs['dst']],
-                    y=[np.zeros((args.batch_size,1,1))])
-                logger.debug('3: %s' % str((model_step3.metrics_names, loss3)))
+                losses3 = model_step3.train_on_batch(
+                    x=[inputs['src'], inputs['dst']],
+                    y=[targets['src'][0], targets['src'][1], targets['src'][1], np.zeros((1,))])
                 if ibatch % args.tensorboard_freq == 0:
-                    tensorboard.log_scalar('step3/' + model_step3.metrics_names[0], loss3, ibatch)
+                    for loss_name, loss in zip(model_step3.metrics_names, losses3):
+                        tensorboard.log_scalar('step3/' + loss_name, loss, iglobal)
+
+        if args.snapshot_dir:
+            model_inference.save(os.path.join(args.snapshot_dir, 'epoch%03d.h5' % epoch))
 
 if __name__ == '__main__':
     main()

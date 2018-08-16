@@ -45,7 +45,11 @@ class Logger(object):
 
     def __init__(self, log_dir):
         """Creates a summary writer logging to log_dir."""
-        self.writer = tf.summary.FileWriter(log_dir)
+        if log_dir is None:
+            logging.warning('Tensorboard is disabled.')
+            self.writer = None
+        else:
+            self.writer = tf.summary.FileWriter(log_dir)
 
     def log_scalar(self, tag, value, step):
         """Log a scalar variable.
@@ -57,12 +61,18 @@ class Logger(object):
         step : int
             training iteration
         """
+        if self.writer is None:
+            return
+
         summary = tf.Summary(value=[tf.Summary.Value(tag=tag,
                                                      simple_value=value)])
         self.writer.add_summary(summary, step)
 
     def log_images(self, tag, images, step):
         """Logs a list of images."""
+
+        if self.writer is None:
+            return
 
         im_summaries = []
         for nr, img in enumerate(images):
@@ -84,6 +94,10 @@ class Logger(object):
         
     def log_histogram(self, tag, values, step, bins=1000):
         """Logs the histogram of a list/vector of values."""
+
+        if self.writer is None:
+            return
+
         # Convert to a numpy array
         values = np.array(values)
         

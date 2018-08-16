@@ -17,9 +17,6 @@ export TF_CPP_MIN_LOG_LEVEL=3  # Remove annoying TF debugging info.
 
 #    traffic_signs $TRAIN_SRC_PATH 
 python3 -u $TELENAV_HOME/retinanet/train_adapt.py \
-    --imagenet-weights \
-    --steps 35000 --batch-size 1 \
     ${@:1} \
-    csv $ANNOTATIONS $CLASSES \
-    $TRAIN_DST_PATH
+    csv $ANNOTATIONS $CLASSES $TRAIN_DST_PATH
 
