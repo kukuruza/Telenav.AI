@@ -16,6 +16,7 @@ import keras
 import keras.preprocessing.image
 import tensorflow as tf
 import progressbar
+from sklearn.preprocessing import normalize
 
 from keras.layers import Lambda
 from keras_retinanet import losses
@@ -51,9 +52,11 @@ def create_models(backbone_retinanet, backbone, num_classes, weights, tensorboar
     model_inference, model_G, model_C1, model_C2 = backbone_retinanet(
         num_classes, backbone=backbone, nms=True, modifier=modifier, adapt=True)
     model_G = model_with_weights(model_G, weights=weights, skip_mismatch=True)
-    logging.debug('model_C1')
+    logging.debug('\n-----------\n| model_G |\n-----------')
+    logging.debug(model_G.summary(print_fn=logging.debug))
+    logging.debug('\n------------\n| model_C1 |\n------------')
     logging.debug(model_C1.summary(print_fn=logging.debug))
-    logging.debug('model_C2')
+    logging.debug('\n------------\n| model_C2 |\n------------')
     logging.debug(model_C2.summary(print_fn=logging.debug))
 
     src_G_outputs = model_G(src_inputs)
@@ -65,6 +68,9 @@ def create_models(backbone_retinanet, backbone, num_classes, weights, tensorboar
     dst_regr = Lambda(lambda x: x, name='dst_regression')(dst_G_outputs[0])
     dst_C1_clas = Lambda(lambda x: x, name='dst_C1_classification')(model_C1(dst_G_outputs[1:]))
     dst_C2_clas = Lambda(lambda x: x, name='dst_C2_classification')(model_C2(dst_G_outputs[1:]))
+
+    src_discr_clas = losses.DiscrepancyClas(name='src_discr_clas')([src_C1_clas, src_C2_clas])
+    src_neg_discr_clas = Lambda(lambda x: -x, name='src_neg_discr_clas')(src_discr_clas)
 
     dst_discr_clas = losses.DiscrepancyClas(name='dst_discr_clas')([dst_C1_clas, dst_C2_clas])
     dst_neg_discr_clas = Lambda(lambda x: -x, name='dst_neg_discr_clas')(dst_discr_clas)
@@ -81,7 +87,7 @@ def create_models(backbone_retinanet, backbone, num_classes, weights, tensorboar
         },
         optimizer=keras.optimizers.adam(lr=1e-5, clipnorm=0.001)
     )
-    logging.debug('model_step1')
+    logging.debug('\n---------------\n| model_step1 |\n---------------')
     logging.debug(model_step1.summary(print_fn=logging.debug))
 
     # Step 2.
@@ -102,7 +108,7 @@ def create_models(backbone_retinanet, backbone, num_classes, weights, tensorboar
         },
         optimizer=keras.optimizers.adam(lr=1e-5, clipnorm=0.001)
     )
-    logging.debug('model_step2')
+    logging.debug('\n---------------\n| model_step2 |\n---------------')
     logging.debug(model_step2.summary(print_fn=logging.debug))
 
     # Step 3.
@@ -115,13 +121,11 @@ def create_models(backbone_retinanet, backbone, num_classes, weights, tensorboar
     model_step3 = keras.models.Model(inputs=inputs, outputs=outputs, name='adapt-step3')
     model_step3.compile(
         loss={
-            'src_regression'       : losses.smooth_l1(),
-            'src_C1_classification': losses.focal(),
-            'src_C2_classification': losses.focal(),
             'dst_discr_clas'       : losses.zero_loss,
         },
         optimizer=keras.optimizers.adam(lr=1e-5, clipnorm=0.001)
     )
+    logging.debug('\n---------------\n| model_step3 |\n---------------')
     logging.debug('model_step3')
     logging.debug(model_step3.summary(print_fn=logging.debug))
 
@@ -130,7 +134,7 @@ def create_models(backbone_retinanet, backbone, num_classes, weights, tensorboar
     outputs = [dst_regr, dst_C1_clas, dst_C2_clas, dst_discr_clas]
     model_inference = keras.models.Model(inputs=inputs, outputs=outputs, name='inference')
     
-    return model_step1, model_step2, model_step3, model_inference
+    return model_step1, model_step2, model_step3, model_inference, model_G
 
 
 def create_generators(args):
@@ -158,7 +162,6 @@ def create_generators(args):
             image_min_side=args.image_min_side,
             image_max_side=args.image_max_side,
             group_method='random'
-#            preprocess_image=preprocess_image,
         )
 
     # Currently dst data is only in ImageFolder format. Maybe make options for the future.
@@ -250,17 +253,28 @@ def parse_args():
     return check_args(parser.parse_args())
 
 
-def log_head_weights_distrib(tensorboard, model_step1, head_name, ibatch):
-    for layer in model_step1.get_layer(head_name).layers:
-        if hasattr(layer, 'layers'):
-            for layerin in layer.layers:
-                #print ('%s.%s' % (layer.name, layerin.name))
-                if layerin.get_weights():
-                    tensorboard.log_histogram('%s/%s/weights' % (head_name, layerin.name), layerin.get_weights()[0], ibatch)
-                    tensorboard.log_histogram('%s/%s/biases' % (head_name, layerin.name), layerin.get_weights()[1], ibatch)
-#                    print('%s/%s/%s: weights 0: %s' % (head_name, layer.name, layerin.name, layerin.get_weights()[0].flatten()[0]))
-#                    print('%s/%s/%s: bias 0: %s' % (head_name, layer.name, layerin.name, layerin.get_weights()[1].flatten()[0]))
-                assert not hasattr(layerin, 'layers'), layerin.layers
+def log_G_weights_distrib(tensorboard, model, ibatch):
+  head_name = 'G'
+  for layer in model.get_layer(head_name).layers:
+    if hasattr(layer, 'layers'):
+      for layerin in layer.layers:
+        assert not hasattr(layerin, 'layers'), layerin.layers
+        if layerin.get_weights():
+#          print ('%s/%s/%s' % (head_name, layer.name, layerin.name))
+          tensorboard.log_histogram('%s/%s/%s/weights' % (head_name, layer.name, layerin.name), layerin.get_weights()[0], ibatch)
+          tensorboard.log_histogram('%s/%s/%s/biases' % (head_name, layer.name, layerin.name), layerin.get_weights()[1], ibatch)
+
+def log_head_weights_distrib(tensorboard, model, head_name, ibatch):
+  for layer in model.get_layer(head_name).layers:
+    if hasattr(layer, 'layers'):
+      for layerin in layer.layers:
+        assert not hasattr(layerin, 'layers'), layerin.layers
+        if layerin.get_weights():
+#          print ('%s/%s/%s' % (head_name, layer.name, layerin.name))
+          tensorboard.log_histogram('%s/%s/%s/weights' % (head_name, layer.name, layerin.name), layerin.get_weights()[0], ibatch)
+#          tensorboard.log_histogram('%s/%s/%s/biases' % (head_name, layer.name, layerin.name), layerin.get_weights()[1], ibatch)
+#          biases_as_grid = normalize(layerin.get_weights()[1].copy().reshape((9,10)), norm='l1')[np.newaxis,:,:] / 3. + 0.5
+#          tensorboard.log_images('model/%s/%s/biases' % (head_name, layerin.name), biases_as_grid, ibatch)
 
 
 def main():
@@ -292,7 +306,7 @@ def main():
 
     # Create the model.
     logger.info('Creating model, this may take a second...')
-    model_step1, model_step2, model_step3, model_inference = create_models(
+    model_step1, model_step2, model_step3, model_inference, model_G = create_models(
         backbone_retinanet=retinanet,
         backbone=args.backbone,
         num_classes=train_generator.generator_src.num_classes(),
@@ -311,6 +325,7 @@ def main():
             iglobal = epoch * args.batches_per_epoch + ibatch + args.tensorboard_offset
 
             if ibatch % (args.tensorboard_freq * 10) == 0:  # Log images 10 less often than everything else.
+
                 # Draw annotations on the source image and display both the source and the target images.
                 src_images_with_boxes = []
                 for image, annotations in zip(inputs['src'], labels['src']):
@@ -320,8 +335,12 @@ def main():
                 tensorboard.log_images('inputs/src', src_images_with_boxes, iglobal)
                 tensorboard.log_images('inputs/dst', (inputs['dst'][:,:,:,::-1] / 2.0 + 0.5), iglobal)
 
+                # Draw t-SNE
+  
+
             # Distributions of all weights in heads C1 and in C2.
             if ibatch % args.tensorboard_freq == 0:
+                log_G_weights_distrib(tensorboard, model_step1, iglobal)
                 log_head_weights_distrib(tensorboard, model_step1, 'C1', iglobal)
                 log_head_weights_distrib(tensorboard, model_step1, 'C2', iglobal)
 
@@ -353,13 +372,13 @@ def main():
             if 3 in args.model_steps:
                 losses3 = model_step3.train_on_batch(
                     x=[inputs['src'], inputs['dst']],
-                    y=[targets['src'][0], targets['src'][1], targets['src'][1], np.zeros((1,))])
+                    y=[np.zeros((1,))])
                 if ibatch % args.tensorboard_freq == 0:
                     for loss_name, loss in zip(model_step3.metrics_names, losses3):
                         tensorboard.log_scalar('step3/' + loss_name, loss, iglobal)
 
         if args.snapshot_dir:
-            model_inference.save(os.path.join(args.snapshot_dir, 'epoch%03d.h5' % epoch))
+            model_inference.save(os.path.join(args.snapshot_dir, 'epoch%03d-step%d.h5' % (epoch, iglobal)))
 
 if __name__ == '__main__':
     main()

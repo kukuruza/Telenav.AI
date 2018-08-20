@@ -164,7 +164,7 @@ class ImageFolderGenerator(ImageOnlyGenerator):
             **kwargs
     ):
         self.logger = logging.getLogger(__name__)
-        self.logger.info('Initializing TrafficSigns dataset from'.format(base_dir))
+        self.logger.info('Initializing ImageFolder dataset from %s' % base_dir)
         self.image_names = []
         self.base_dir = base_dir
         self.image_names = glob(os.path.join(self.base_dir, '*.jpg'))
@@ -194,7 +194,7 @@ class AdaptGenerator:
         self.generator_src = generator_src
         self.generator_tgt = generator_tgt
         self.logger = logging.getLogger(__name__)
-        self.logger.info('Dataset was initialised.')
+        self.logger.info('AdaptGenerator dataset was initialised.')
 
     def __next__(self):
         input_src, target_src, labels_src = self.generator_src.__next__()

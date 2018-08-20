@@ -81,6 +81,17 @@ def smooth_l1(sigma=3.0):
 
 
 
+class SoftmaxDiscrepancy(Layer):
+    def __init__(self, alpha=0.01, **kwargs):
+        super(SoftmaxDiscrepancy, self).__init__(**kwargs)
+        self.alpha = alpha
+
+    def call(self, x, mask=None):
+        x0 = keras.backend.softmax(x[0], axis=2)
+        x1 = keras.backend.softmax(x[1], axis=2)
+        loss = self.alpha * keras.backend.sum(keras.backend.abs(x0 - x1))
+        return loss
+
 
 class FocalDiscrepancyClas(Layer):
     def __init__(self, gamma=2.0, alpha=1.0, **kwargs):
