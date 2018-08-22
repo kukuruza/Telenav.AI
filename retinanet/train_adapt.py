@@ -44,8 +44,8 @@ def model_with_weights(model, weights, skip_mismatch):
     return model
 
 
-def create_models(backbone_retinanet, backbone, num_classes, weights, tensorboard, freeze_backbone=False):
-    modifier = freeze_model if freeze_backbone else None
+def create_models(backbone_retinanet, backbone, num_classes, weights, args, tensorboard):
+    modifier = freeze_model if args.freeze_backbone else None
 
     src_inputs = keras.layers.Input(shape=(None, None, 3), name='src_inputs')
     dst_inputs = keras.layers.Input(shape=(None, None, 3), name='dst_inputs')
@@ -69,10 +69,10 @@ def create_models(backbone_retinanet, backbone, num_classes, weights, tensorboar
     dst_C1_clas = Lambda(lambda x: x, name='dst_C1_classification')(model_C1(dst_G_outputs[1:]))
     dst_C2_clas = Lambda(lambda x: x, name='dst_C2_classification')(model_C2(dst_G_outputs[1:]))
 
-    src_discr_clas = losses.DiscrepancyClas(name='src_discr_clas')([src_C1_clas, src_C2_clas])
+    src_discr_clas = losses.DiscrepancyClas(name='src_discr_clas', alpha=args.discr_alpha)([src_C1_clas, src_C2_clas])
     src_neg_discr_clas = Lambda(lambda x: -x, name='src_neg_discr_clas')(src_discr_clas)
 
-    dst_discr_clas = losses.DiscrepancyClas(name='dst_discr_clas')([dst_C1_clas, dst_C2_clas])
+    dst_discr_clas = losses.DiscrepancyClas(name='dst_discr_clas', alpha=args.discr_alpha)([dst_C1_clas, dst_C2_clas])
     dst_neg_discr_clas = Lambda(lambda x: -x, name='dst_neg_discr_clas')(dst_discr_clas)
 
     # Step 1.
@@ -85,7 +85,7 @@ def create_models(backbone_retinanet, backbone, num_classes, weights, tensorboar
             'src_C1_classification': losses.focal(),
             'src_C2_classification': losses.focal(),
         },
-        optimizer=keras.optimizers.adam(lr=1e-5, clipnorm=0.001)
+        optimizer=keras.optimizers.adam(lr=args.lr, clipnorm=0.001)
     )
     logging.debug('\n---------------\n| model_step1 |\n---------------')
     logging.debug(model_step1.summary(print_fn=logging.debug))
@@ -106,7 +106,7 @@ def create_models(backbone_retinanet, backbone, num_classes, weights, tensorboar
             'src_C2_classification': losses.focal(),
             'dst_neg_discr_clas'   : losses.zero_loss,
         },
-        optimizer=keras.optimizers.adam(lr=1e-5, clipnorm=0.001)
+        optimizer=keras.optimizers.adam(lr=args.lr, clipnorm=0.001)
     )
     logging.debug('\n---------------\n| model_step2 |\n---------------')
     logging.debug(model_step2.summary(print_fn=logging.debug))
@@ -123,7 +123,7 @@ def create_models(backbone_retinanet, backbone, num_classes, weights, tensorboar
         loss={
             'dst_discr_clas'       : losses.zero_loss,
         },
-        optimizer=keras.optimizers.adam(lr=1e-5, clipnorm=0.001)
+        optimizer=keras.optimizers.adam(lr=args.lr, clipnorm=0.001)
     )
     logging.debug('\n---------------\n| model_step3 |\n---------------')
     logging.debug('model_step3')
@@ -238,6 +238,8 @@ def parse_args():
     parser.add_argument('--load-snapshot',   help='Resume training from a snapshot. If not specified, will use ImageNet weights.')
     parser.add_argument('--backbone',        help='Backbone model used by retinanet.', default='resnet50', type=str)
     parser.add_argument('--freeze-backbone', help='Freeze training of backbone layers.', action='store_true')
+    parser.add_argument('--lr',              help='Learning rate for all models.', default=1e-5, type=float)
+    parser.add_argument('--discr-alpha',     help='Discrepancy loss weight.', required=True, type=float)
     parser.add_argument('--batch-size',      help='Size of the batches.', default=1, type=int)
     parser.add_argument('--image-min-side',  help='Rescale the image so the smallest side is min_side.', type=int, default=1080)
     parser.add_argument('--image-max-side',  help='Rescale the image if the largest side is larger than max_side.', type=int, default=2592)
@@ -272,9 +274,9 @@ def log_head_weights_distrib(tensorboard, model, head_name, ibatch):
         if layerin.get_weights():
 #          print ('%s/%s/%s' % (head_name, layer.name, layerin.name))
           tensorboard.log_histogram('%s/%s/%s/weights' % (head_name, layer.name, layerin.name), layerin.get_weights()[0], ibatch)
-#          tensorboard.log_histogram('%s/%s/%s/biases' % (head_name, layer.name, layerin.name), layerin.get_weights()[1], ibatch)
-#          biases_as_grid = normalize(layerin.get_weights()[1].copy().reshape((9,10)), norm='l1')[np.newaxis,:,:] / 3. + 0.5
-#          tensorboard.log_images('model/%s/%s/biases' % (head_name, layerin.name), biases_as_grid, ibatch)
+          tensorboard.log_histogram('%s/%s/%s/biases' % (head_name, layer.name, layerin.name), layerin.get_weights()[1], ibatch)
+          biases_as_grid = normalize(layerin.get_weights()[1].copy().reshape((9,10)), norm='l1')[np.newaxis,:,:] / 3. + 0.5
+          tensorboard.log_images('model/%s/%s/biases' % (head_name, layerin.name), biases_as_grid, ibatch)
 
 
 def main():
@@ -311,7 +313,7 @@ def main():
         backbone=args.backbone,
         num_classes=train_generator.generator_src.num_classes(),
         weights=(download_imagenet(args.backbone) if not args.load_snapshot else None),
-        freeze_backbone=args.freeze_backbone,
+        args=args,
         tensorboard=tensorboard,
     )
     if args.load_snapshot:
@@ -335,10 +337,7 @@ def main():
                 tensorboard.log_images('inputs/src', src_images_with_boxes, iglobal)
                 tensorboard.log_images('inputs/dst', (inputs['dst'][:,:,:,::-1] / 2.0 + 0.5), iglobal)
 
-                # Draw t-SNE
-  
-
-            # Distributions of all weights in heads C1 and in C2.
+            # Distributions of all weights in heads C1 and in C2, of confidence, of confidence only of FP and T.
             if ibatch % args.tensorboard_freq == 0:
                 log_G_weights_distrib(tensorboard, model_step1, iglobal)
                 log_head_weights_distrib(tensorboard, model_step1, 'C1', iglobal)
@@ -352,6 +351,19 @@ def main():
                 tensorboard.log_histogram('predict/dst_C1', predict[1].flatten(), iglobal)
                 tensorboard.log_histogram('predict/dst_C2', predict[2].flatten(), iglobal)
                 tensorboard.log_histogram('predict/dst_discr', predict[3].flatten(), iglobal)
+
+                predict = model_inference.predict(x=[inputs['src']])
+                THRES = 0.02
+                T = np.where(targets['src'][1].flatten() > 0)[0]
+                FP_C1 = np.where(np.logical_and(targets['src'][1].flatten() <= 0, predict[1].flatten() > THRES))[0]
+                FP_C2 = np.where(np.logical_and(targets['src'][1].flatten() <= 0, predict[2].flatten() > THRES))[0]
+                if T.size > 0:
+                    tensorboard.log_histogram('predict/src_T_C1', predict[1].flatten()[T], iglobal)
+                    tensorboard.log_histogram('predict/src_T_C2', predict[2].flatten()[T], iglobal)
+                if FP_C1.size > 0:
+                    tensorboard.log_histogram('predict/src_FP_C1', predict[1].flatten()[FP_C1], iglobal)
+                if FP_C2.size > 0:
+                    tensorboard.log_histogram('predict/src_FP_C2', predict[2].flatten()[FP_C2], iglobal)
 
             if 1 in args.model_steps:
                 losses1 = model_step1.train_on_batch(
@@ -379,6 +391,47 @@ def main():
 
         if args.snapshot_dir:
             model_inference.save(os.path.join(args.snapshot_dir, 'epoch%03d-step%d.h5' % (epoch, iglobal)))
+
+    # Write embedding.
+    logging.info('hi')
+    predict = model_G.predict(x=[inputs['src']])
+    predict = predict[1:]  # Output 0 is regression.
+    for ifeature,feature in enumerate(predict):
+        assert len(feature.shape) == 4, feature.shape
+        feature = np.pad(feature, ((0,0),(1,1),(1,1),(0,0)), 'edge')
+        feature = feature[:,:,:,:,np.newaxis]
+        feature = np.tile(feature, (1,1,1,1,9))
+        for x in range(3):
+            for y in range(3):
+                X, Y = feature.shape[1:3]
+                feature[:, 1:-1, 1:-1, :, x*3+y] = feature[:, x:X-2+x, y:Y-2+y, :, x*3+y]  # rotate.
+        feature = feature[:, 1:-1, 1:-1, :, :]
+        feature = feature.reshape((feature.shape[0], feature.shape[1], feature.shape[2], -1))
+        predict[ifeature] = feature
+    predict = [feature.reshape((-1, 256*9)) for feature in predict]  # For each pyramid level.
+    predict = np.vstack(predict)  # Stack pyramid levels.
+
+    targets = targets['src'][1].reshape((-1,9,10))
+    targets = targets[:,0,:]  # The first anchor only.
+    positive_targets_indices = np.where(targets > 0)[0]  # [0] for rows only
+
+    print ('predict, targets', predict.shape, targets.shape)
+    print ('positive indices', positive_targets_indices.shape)
+
+    num_predict = 500
+    #predict_indices = np.argsort(predict, axis=0)[::-1][:num_predict]
+    predict_indices = np.random.choice(np.arange(len(predict)), size=num_predict, replace=False)
+    print ('predict indices', predict_indices.shape)
+
+    if positive_targets_indices.size == 0:
+        take_indices = predict_indices
+    else:
+        take_indices = np.concatenate([positive_targets_indices, predict_indices])
+    predict = predict[take_indices]
+    targets = targets[take_indices]
+    labels = (targets > 0).argmax(axis = 1)  # Index of the first (and hopefully the last) positive element in each row.
+    tensorboard.log_projection(tag='input/src', values=predict, labels=labels, step=iglobal)
+
 
 if __name__ == '__main__':
     main()

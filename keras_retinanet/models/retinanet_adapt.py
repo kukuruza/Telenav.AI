@@ -42,6 +42,7 @@ def incomplete_classification_model(
     num_anchors,
     pyramid_feature_size=256,
     prior_probability=0.01,
+    weight_init_std=0.001,
     classification_feature_size=256,
     name='classification_submodel'
 ):
@@ -69,7 +70,7 @@ def incomplete_classification_model(
             filters=classification_feature_size,
             activation='relu',
             name='pyramid_classification_{}'.format(i),
-            kernel_initializer=keras.initializers.normal(mean=0.0, stddev=0.01, seed=None),
+            kernel_initializer=keras.initializers.normal(mean=0.0, stddev=weight_init_std, seed=None),
             bias_initializer='zeros',
             **options
         )(outputs)
@@ -81,6 +82,7 @@ def clas_discriminator_model(
     num_classes,
     anchor_parameters,
     prior_probability=0.01,
+    weight_init_std=0.001,
     classification_feature_size=256,
     name='D'):
 
@@ -97,7 +99,7 @@ def clas_discriminator_model(
         filters=num_classes * num_anchors,
         # C1 and C2 are different, so had to replace zero init to normal init.
         #kernel_initializer=keras.initializers.zeros(),
-        kernel_initializer=keras.initializers.normal(mean=0.0, stddev=0.01, seed=None), 
+        kernel_initializer=keras.initializers.normal(mean=0.0, stddev=weight_init_std, seed=None), 
         bias_initializer=initializers.PriorProbability(probability=prior_probability),
         name='conv1',
         **options
@@ -110,7 +112,13 @@ def clas_discriminator_model(
     return keras.models.Model(inputs=inputs, outputs=outputs, name=name)
 
 
-def default_regression_model(num_anchors, pyramid_feature_size=256, regression_feature_size=256, name='regression_submodel'):
+def default_regression_model(
+    num_anchors,
+    pyramid_feature_size=256,
+    regression_feature_size=256,
+    weight_init_std=0.001,
+    name='regression_submodel'):
+
     """ Creates the default regression submodel.
 
     Args
@@ -129,7 +137,7 @@ def default_regression_model(num_anchors, pyramid_feature_size=256, regression_f
         'kernel_size'        : 3,
         'strides'            : 1,
         'padding'            : 'same',
-        'kernel_initializer' : keras.initializers.normal(mean=0.0, stddev=0.01, seed=None),
+        'kernel_initializer' : keras.initializers.normal(mean=0.0, stddev=weight_init_std, seed=None),
         'bias_initializer'   : 'zeros'
     }
 

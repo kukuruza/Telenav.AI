@@ -131,13 +131,13 @@ class PercentDiscrepancyClas(Layer):
         return (1,)
 
 class DiscrepancyClas(Layer):
-    def __init__(self, alpha=0.0001, **kwargs):
+    def __init__(self, alpha=1., **kwargs):
         super(DiscrepancyClas, self).__init__(**kwargs)
         self.alpha = alpha
 
     def call(self, x, mask=None):
 
-        loss = keras.backend.sum(keras.backend.abs(x[0] - x[1])) * self.alpha
+        loss = keras.backend.mean(keras.backend.abs(x[0] - x[1])) * self.alpha
         #self.add_loss(loss, x)
         return loss
 

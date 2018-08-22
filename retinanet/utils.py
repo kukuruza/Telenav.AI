@@ -16,10 +16,12 @@ import traceback
 import math
 import threading
 import keras_retinanet.utils.image as retinanet_image
+import keras.backend as K
 from collections import OrderedDict
 from keras.models import Model as Keras_Model
 from tensorflow import Session as Tensorflow_Session
 import tensorflow as tf
+from tensorflow.contrib.tensorboard.plugins import projector
 from io import BytesIO
 import matplotlib.pyplot as plt
 
@@ -45,6 +47,7 @@ class Logger(object):
 
     def __init__(self, log_dir):
         """Creates a summary writer logging to log_dir."""
+        self.log_dir = log_dir
         if log_dir is None:
             logging.warning('Tensorboard is disabled.')
             self.writer = None
@@ -127,6 +130,30 @@ class Logger(object):
         summary = tf.Summary(value=[tf.Summary.Value(tag=tag, histo=hist)])
         self.writer.add_summary(summary, step)
         self.writer.flush()
+
+    def log_projection(self, tag, values, labels, step):
+        if self.writer is None:
+            return
+
+        sess = K.get_session()
+        with tf.device("/cpu:0"):
+            values = tf.Variable(values, name=tag)
+        sess.run(values.initializer)
+
+        config = projector.ProjectorConfig()
+        embed = config.embeddings.add()
+        embed.tensor_name = tag + ':0'
+        metadata_name = 'projection-step%d.tsv' % step
+        embed.metadata_path = metadata_name
+        #embed.sprite.image_path = os.path.join(FLAGS.data_dir + '/mnist_10k_sprite.png')
+        projector.visualize_embeddings(self.writer, config)
+
+        saver = tf.train.Saver()
+        saver.save(sess, os.path.join(self.log_dir, 'projection-step%d' % step), 1)
+
+        if labels is not None:
+            with open(os.path.join(self.log_dir, metadata_name), 'w') as f:
+                f.write('\n'.join([str(x) for x in labels.flatten().tolist()]))
 
 
 def predict_folder(model, input_folder, output_folder, resolutions, rois_labels, score_threshold_per_class,
